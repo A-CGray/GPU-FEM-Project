@@ -1,3 +1,7 @@
+# Ignore mesh files
+*.msh
+*.bdf
+
 # To ignore compiled binaries that have no extensions we need to first ignore everything, then unignore files with extensions and directories
 *
 !*.*
@@ -13,6 +17,7 @@
 
 # NVidia profiling reports
 *.ncu-rep
+*.nsys-rep
 
 # ==============================================================================
 # Standard C++ gitignore
@@ -53,6 +58,9 @@
 # ==============================================================================
 # Standard python gitignore
 # ==============================================================================
+# local virtual environment specifier
+.python-version
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
