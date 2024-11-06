@@ -1,11 +1,11 @@
 """
 ==============================================================================
-L-Bracket mesh generation
+Square mesh generation
 ==============================================================================
-@File    :   generateLBracket.py
+@File    :   generateSquareMesh.py
 @Date    :   2024/11/05
 @Author  :   Alasdair Christison Gray
-@Description : Uses gmsh to generate a mesh of the classic L-Bracket geometry
+@Description : Uses gmsh to generate a mesh of a basic square
 """
 
 # ==============================================================================
@@ -23,12 +23,12 @@ import gmsh
 from GmshUtils import meshSurface, createPlaneSurfaceFromPerimeterPoints
 
 
-def generateLBracket(
+def generateSquareMesh(
     sideLength: float = 1.0,
-    cutoutSize: float = 0.6,
     meshSize: float = 0.1,
     order: int = 1,
     refine: int = 0,
+    smoothingIterations: int = 10,
     visualise: bool = False,
 ):
     """
@@ -38,28 +38,32 @@ def generateLBracket(
     # Initialize the gmsh
     gmsh.initialize()
 
-    legWidth = sideLength - cutoutSize
     perimeterPointCoords: list[list[float]] = [
         [0, 0],
         [sideLength, 0],
-        [sideLength, legWidth],
-        [legWidth, legWidth],
-        [legWidth, sideLength],
+        [sideLength, sideLength],
         [0, sideLength],
     ]
 
-    gmsh.model.add("LBracket")
+    gmsh.model.add("Square")
 
     surface, _, _, _ = createPlaneSurfaceFromPerimeterPoints(perimeterPointCoords)
 
     gmsh.model.geo.synchronize()
 
-    gmsh.model.addPhysicalGroup(2, [surface], 1, name="LBracket")
+    gmsh.model.addPhysicalGroup(2, [surface], 1, name="Square")
 
-    meshSurface(surface, meshSize=meshSize, order=order, refine=refine)
+    meshSurface(surface, meshSize=meshSize, order=order, refine=refine, smoothingIterations=smoothingIterations)
 
-    gmsh.write("LBracket.msh")
-    gmsh.write("LBracket.bdf")
+    nodeIDs, nodeCoords, _ = gmsh.model.mesh.getNodes()
+    elementTypes, elementTags, elementNodes = gmsh.model.mesh.getElements(2)
+    numNodes = len(nodeIDs)
+    numElements = len(elementTags[0])
+
+    meshName = f"Square-Order{order}-{numElements}Elements-{numNodes*2}DOF"
+
+    gmsh.write(f"{meshName}.msh")
+    gmsh.write(f"{meshName}.bdf")
 
     if visualise:
         gmsh.option.setNumber("Mesh.Nodes", 1)
@@ -77,15 +81,16 @@ if __name__ == "__main__":
     parser.add_argument("--cutoutSize", type=float, default=0.6)
     parser.add_argument("--meshSize", type=float, default=0.1)
     parser.add_argument("--order", type=int, default=1)
+    parser.add_argument("--smooth", type=int, default=10)
     parser.add_argument("--refine", type=int, default=0)
     parser.add_argument("--visualise", action="store_true")
     args = parser.parse_args()
 
-    generateLBracket(
+    generateSquareMesh(
         sideLength=args.sideLength,
-        cutoutSize=args.cutoutSize,
         meshSize=args.meshSize,
         order=args.order,
         refine=args.refine,
+        smoothingIterations=args.smooth,
         visualise=args.visualise,
     )

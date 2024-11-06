@@ -100,8 +100,11 @@ def meshSurface(
     if refine > 0:
         for _ in range(refine):
             gmsh.model.mesh.refine()
+
         # Refining the mesh puts it back to first order elements, need to re-mesh to get back to desired order
-        gmsh.model.mesh.generate(2)
+        if order > 1:
+            gmsh.model.mesh.setOrder(order)
+            gmsh.model.mesh.generate(2)
 
     smoothingType = "Laplace2D" if order == 1 else "HighOrder"
     gmsh.model.mesh.optimize(smoothingType, niter=smoothingIterations)

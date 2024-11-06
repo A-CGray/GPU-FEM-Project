@@ -1,7 +1,3 @@
-# Ignore mesh files
-*.msh
-*.bdf
-
 # To ignore compiled binaries that have no extensions we need to first ignore everything, then unignore files with extensions and directories
 *
 !*.*
@@ -17,7 +13,11 @@
 
 # NVidia profiling reports
 *.ncu-rep
-*.nsys-rep
+*.nsys-
+
+# Mesh files
+*.msh
+*.bdf
 
 # ==============================================================================
 # Standard C++ gitignore
