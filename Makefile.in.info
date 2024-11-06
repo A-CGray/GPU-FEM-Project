@@ -1,0 +1,9 @@
+# declare A2D location
+A2D_DIR = ${HOME}/repos/a2d
+A2D_INCLUDE = -I${A2D_DIR}/include
+
+# declare TACS location
+TACS_DIR = ${HOME}/repos/tacs
+include ${TACS_DIR}/Makefile.in
+include ${TACS_DIR}/TACS_Common.mk
+
