@@ -104,7 +104,7 @@ int main(int argc, char *argv[]) {
   quadFormStack.reverse();
 
   // Print the results
-  std::cout << "\n\nf(x) = 1/2 * x^T A x + b^T x, df/dx = [ ";
+  std::cout << "\n\nf(x) = 1/2 * x^T A x + b^T x\ndf/dx = [ ";
   for (int ii = 0; ii < N; ii++) {
     std::cout << xVec.bvalue()[ii] << " ";
   }
