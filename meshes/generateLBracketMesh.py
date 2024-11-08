@@ -66,7 +66,6 @@ def generateLBracketMesh(
 
     meshName = f"LBracket-Order{order}-{numElements}Elements-{numNodes*2}DOF"
 
-    gmsh.write(f"{meshName}.msh")
     gmsh.write(f"{meshName}.bdf")
 
     if visualise:
@@ -76,9 +75,12 @@ def generateLBracketMesh(
 
     gmsh.finalize()
 
+    return meshName
+
 
 if __name__ == "__main__":
     import argparse
+    from GmshUtils import fixGmshBDF
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--sideLength", type=float, default=1.0)
@@ -90,7 +92,7 @@ if __name__ == "__main__":
     parser.add_argument("--visualise", action="store_true")
     args = parser.parse_args()
 
-    generateLBracketMesh(
+    meshName = generateLBracketMesh(
         sideLength=args.sideLength,
         cutoutSize=args.cutoutSize,
         meshSize=args.meshSize,
@@ -99,3 +101,6 @@ if __name__ == "__main__":
         smoothingIterations=args.smooth,
         visualise=args.visualise,
     )
+
+    if args.order > 1:
+        fixGmshBDF(f"{meshName}.bdf")

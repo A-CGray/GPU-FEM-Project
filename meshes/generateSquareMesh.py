@@ -62,7 +62,6 @@ def generateSquareMesh(
 
     meshName = f"Square-Order{order}-{numElements}Elements-{numNodes*2}DOF"
 
-    gmsh.write(f"{meshName}.msh")
     gmsh.write(f"{meshName}.bdf")
 
     if visualise:
@@ -71,22 +70,24 @@ def generateSquareMesh(
         gmsh.fltk.run()
 
     gmsh.finalize()
+    return meshName
 
 
 if __name__ == "__main__":
     import argparse
+    from GmshUtils import fixGmshBDF
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--sideLength", type=float, default=1.0)
     parser.add_argument("--cutoutSize", type=float, default=0.6)
     parser.add_argument("--meshSize", type=float, default=0.1)
-    parser.add_argument("--order", type=int, default=1)
+    parser.add_argument("--order", type=int, default=3)
     parser.add_argument("--smooth", type=int, default=10)
     parser.add_argument("--refine", type=int, default=0)
     parser.add_argument("--visualise", action="store_true")
     args = parser.parse_args()
 
-    generateSquareMesh(
+    meshName = generateSquareMesh(
         sideLength=args.sideLength,
         meshSize=args.meshSize,
         order=args.order,
@@ -94,3 +95,6 @@ if __name__ == "__main__":
         smoothingIterations=args.smooth,
         visualise=args.visualise,
     )
+
+    if args.order > 1:
+        fixGmshBDF(f"{meshName}.bdf")

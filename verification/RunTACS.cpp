@@ -28,6 +28,25 @@
 // =============================================================================
 // Function prototypes
 // =============================================================================
+/**
+ * @brief Compute the u and v displacements to set at the point (x, y)
+ *
+ * @param x x coordinate
+ * @param y y coordinate
+ * @param u x displacement
+ * @param v y displacement
+ */
+void displacementField(const TacsScalar x, const TacsScalar y, TacsScalar &u, TacsScalar &v);
+
+/**
+ * @brief Set the TACS displacement values using a displacementField function
+ *
+ * @param assembler TACS assembler
+ * @param displacementField Function that computes the displacements given coordinates
+ */
+void setAnalyticDisplacements(
+    TACSAssembler *assembler,
+    void (*const displacementFieldFunc)(const TacsScalar x, const TacsScalar y, TacsScalar &u, TacsScalar &v));
 
 // =============================================================================
 // Main
@@ -37,35 +56,37 @@ int main(int argc, char *argv[]) {
 
   // Create the mesh loader object on MPI_COMM_WORLD. The
   // TACSAssembler object will be created on the same comm
-  TACSMeshLoader *mesh = new TACSMeshLoader(MPI_COMM_WORLD);
+  TACSMeshLoader *const mesh = new TACSMeshLoader(MPI_COMM_WORLD);
   mesh->incref();
 
   // Create the isotropic material class
-  TacsScalar rho = 2700.0;
-  TacsScalar specific_heat = 921.096;
-  TacsScalar E = 70e3;
-  TacsScalar nu = 0.3;
-  TacsScalar ys = 270.0;
-  TacsScalar cte = 24.0e-6;
-  TacsScalar kappa = 230.0;
-  TACSMaterialProperties *props = new TACSMaterialProperties(rho, specific_heat, E, nu, ys, cte, kappa);
+  const TacsScalar rho = 2700.0;
+  const TacsScalar specific_heat = 921.096;
+  const TacsScalar E = 70e9;
+  const TacsScalar nu = 0.3;
+  const TacsScalar ys = 400e6;
+  const TacsScalar cte = 24.0e-6;
+  const TacsScalar kappa = 230.0;
+  TACSMaterialProperties *const props = new TACSMaterialProperties(rho, specific_heat, E, nu, ys, cte, kappa);
 
   // Create the stiffness object
-  TACSPlaneStressConstitutive *stiff = new TACSPlaneStressConstitutive(props);
+  TACSPlaneStressConstitutive *const stiff = new TACSPlaneStressConstitutive(props);
   stiff->incref();
 
   // Create the model class
-  TACSLinearElasticity2D *model = new TACSLinearElasticity2D(stiff, TACS_LINEAR_STRAIN);
+  TACSLinearElasticity2D *const model = new TACSLinearElasticity2D(stiff, TACS_NONLINEAR_STRAIN);
 
   // Create the basis
   TACSElementBasis *linear_basis = new TACSLinearQuadBasis();
   TACSElementBasis *quad_basis = new TACSQuadraticQuadBasis();
   TACSElementBasis *cubic_basis = new TACSCubicQuadBasis();
+  TACSElementBasis *quartic_basis = new TACSQuarticQuadBasis();
 
   // Create the element type
   TACSElement2D *linear_element = new TACSElement2D(model, linear_basis);
   TACSElement2D *quad_element = new TACSElement2D(model, quad_basis);
   TACSElement2D *cubic_element = new TACSElement2D(model, cubic_basis);
+  TACSElement2D *quartic_element = new TACSElement2D(model, quartic_basis);
 
   // The TACSAssembler object - which should be allocated if the mesh
   // is loaded correctly
@@ -101,6 +122,9 @@ int main(int argc, char *argv[]) {
           else if (strcmp(elem_descript, "CQUAD16") == 0) {
             elem = cubic_element;
           }
+          else if (strcmp(elem_descript, "CQUAD25") == 0) {
+            elem = quartic_element;
+          }
 
           // Set the element object into the mesh loader class
           if (elem) {
@@ -124,47 +148,18 @@ int main(int argc, char *argv[]) {
 
   if (assembler) {
     // Reorder the nodal variables
-    int reorder = 0;
-    enum TACSAssembler::OrderingType order_type = TACSAssembler::ND_ORDER;
-    enum TACSAssembler::MatrixOrderingType mat_type = TACSAssembler::APPROXIMATE_SCHUR;
-    if (reorder) {
-      assembler->computeReordering(order_type, mat_type);
-    }
+    // int reorder = 1;
+    // enum TACSAssembler::OrderingType order_type = TACSAssembler::ND_ORDER;
+    // enum TACSAssembler::MatrixOrderingType mat_type = TACSAssembler::APPROXIMATE_SCHUR;
+    // if (reorder) {
+    //   assembler->computeReordering(order_type, mat_type);
+    // }
 
-    // Perform initialization - cannot add any more elements/vars etc
-    // assembler->initialize();
-
-    // Create a node vector
-    TACSBVec *nodeVec = assembler->createNodeVec();
-    nodeVec->incref();
-    assembler->getNodes(nodeVec);
-
-    // Get the local node locations
-    TacsScalar *Xpts = NULL;
-    nodeVec->getArray(&Xpts);
-
-    // Create a vector to set the displacements
-    TACSBVec *dispVec = assembler->createVec();
-    dispVec->incref();
-
-    TacsScalar *disp;
-    dispVec->getArray(&disp);
-
-    // Set the displacements to ux = sin(2 pi x) * sin(2 pi y), uy - cos(2 pi x) * cos(2 pi y)
-    // TODO: Are node coordinates still 3D?
-    const TacsScalar dispScale = 1e-3;
-    for (int i = 0; i < assembler->getNumNodes(); i++) {
-      const TacsScalar x = Xpts[3 * i];
-      const TacsScalar y = Xpts[3 * i + 1];
-
-      disp[2 * i] = dispScale * sin(2.0 * M_PI * x) * sin(2.0 * M_PI * y);
-      disp[2 * i + 1] = dispScale * cos(2.0 * M_PI * x) * cos(2.0 * M_PI * y);
-    }
-    assembler->setVariables(dispVec);
+    setAnalyticDisplacements(assembler, displacementField);
 
     // --- Evaluate residual ---
-    TACSBvec *res = assembler->createVec();
-    assembler.assembleRes(res);
+    TACSBVec *res = assembler->createVec();
+    assembler->assembleRes(res);
 
     // TODO: Write out the residual here?
 
@@ -178,8 +173,6 @@ int main(int argc, char *argv[]) {
 
     // Free everything
     f5->decref();
-    nodeVec->decref();
-    dispVec->decref();
   }
 
   MPI_Finalize();
@@ -189,3 +182,39 @@ int main(int argc, char *argv[]) {
 // =============================================================================
 // Function definitions
 // =============================================================================
+void displacementField(const TacsScalar x, const TacsScalar y, TacsScalar &u, TacsScalar &v) {
+  const TacsScalar dispScale = 1e-2;
+  u = dispScale * (sin(2.0 * M_PI * x) + sin(2.0 * M_PI * y));
+  v = dispScale * (cos(2.0 * M_PI * x) + cos(2.0 * M_PI * y));
+}
+
+void setAnalyticDisplacements(
+    TACSAssembler *assembler,
+    void (*const displacementFieldFunc)(const TacsScalar x, const TacsScalar y, TacsScalar &u, TacsScalar &v)) {
+
+  // Create a node vector
+  TACSBVec *nodeVec = assembler->createNodeVec();
+  nodeVec->incref();
+  assembler->getNodes(nodeVec);
+
+  // Get the local node locations
+  TacsScalar *Xpts = NULL;
+  nodeVec->getArray(&Xpts);
+
+  // Create a vector to set the displacements
+  TACSBVec *dispVec = assembler->createVec();
+  dispVec->incref();
+
+  TacsScalar *disp;
+  dispVec->getArray(&disp);
+
+  // Set the displacements to ux = sin(2 pi x) * sin(2 pi y), uy - cos(2 pi x) * cos(2 pi y)
+  // TODO: Are node coordinates still 3D for 2D problem?
+  for (int i = 0; i < assembler->getNumNodes(); i++) {
+    displacementField(Xpts[3 * i], Xpts[3 * i + 1], disp[2 * i], disp[2 * i + 1]);
+  }
+  assembler->setVariables(dispVec);
+
+  nodeVec->decref();
+  dispVec->decref();
+}
