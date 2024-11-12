@@ -15,6 +15,7 @@
 // =============================================================================
 // Extension Includes
 // =============================================================================
+#include "../element/ElementStruct.h"
 #include "TACSElement2D.h"
 #include "TACSLinearElasticity.h"
 #include "TACSMeshLoader.h"
@@ -28,6 +29,7 @@
 // =============================================================================
 // Function prototypes
 // =============================================================================
+
 /**
  * @brief Compute the u and v displacements to set at the point (x, y)
  *
@@ -47,6 +49,20 @@ void displacementField(const TacsScalar x, const TacsScalar y, TacsScalar &u, Ta
 void setAnalyticDisplacements(
     TACSAssembler *assembler,
     void (*const displacementFieldFunc)(const TacsScalar x, const TacsScalar y, TacsScalar &u, TacsScalar &v));
+
+void writeResidualToFile(TACSBVec *res, const char *filename);
+
+void writeBCSRMatToFile(BCSRMatData *const matData, const char *filename);
+
+void writeTACSSolution(TACSAssembler *assembler, const char *filename);
+
+template <elementParams elemParams>
+void a2dResidual(const int numElements,
+                 const int *const connPtr,
+                 const int *const conn,
+                 const TacsScalar *const Xpts,
+                 const TacsScalar *const states,
+                 TacsScalar *const res);
 
 // =============================================================================
 // Main
@@ -132,6 +148,8 @@ int main(int argc, char *argv[]) {
           }
         }
 
+        // TODO: Define node reordering here?
+
         // Now, create the TACSAssembler object
         int vars_per_node = 2;
         assembler = mesh->createTACS(vars_per_node);
@@ -147,32 +165,93 @@ int main(int argc, char *argv[]) {
   }
 
   if (assembler) {
-    // Reorder the nodal variables
-    // int reorder = 1;
-    // enum TACSAssembler::OrderingType order_type = TACSAssembler::ND_ORDER;
-    // enum TACSAssembler::MatrixOrderingType mat_type = TACSAssembler::APPROXIMATE_SCHUR;
-    // if (reorder) {
-    //   assembler->computeReordering(order_type, mat_type);
-    // }
 
+    // --- Write out solution file with analytic displacement field ---
     setAnalyticDisplacements(assembler, displacementField);
+    writeTACSSolution(assembler, "output.f5");
 
-    // --- Evaluate residual ---
+    // --- Evaluate Jacobian and residual and write them to file ---
+    TACSAssembler::OrderingType matOrder = TACSAssembler::AMD_ORDER;
+    TACSSchurMat *mat = assembler->createSchurMat(matOrder);
+    assembler->assembleJacobian(1.0, 0.0, 0.0, NULL, mat);
+    BCSRMat *jac;
+    mat->getBCSRMat(&jac, NULL, NULL, NULL);
+    BCSRMatData *jacData = jac->getMatData();
+    printf("Jacobian data:\n");
+    printf("nRows: %d\n", jacData->nrows);
+    printf("nCols: %d\n", jacData->ncols);
+    printf("Block size: %d\n", jacData->bsize);
+    writeBCSRMatToFile(jacData, "TACSJacobian.mtx");
+
+    // --- Evaluate residual and write to file ---
+    // TODO: Why does the ordering of the residual not seem to be affected by the matrix ordering type?
     TACSBVec *res = assembler->createVec();
     assembler->assembleRes(res);
+    assembler->reorderVec(res);
+    if (assembler->isReordered()) {
+      printf("Assembler is reordered\n");
+    }
+    else {
+      printf("Assembler is not reordered\n");
+    }
+    writeResidualToFile(res, "TACSResidual.csv");
 
-    // TODO: Write out the residual here?
+    // --- Get the data required for the GPU kernel ---
+    // number of nodes & elements
+    // Node coordinates
+    // Element Connectivity
+    // Integration point weights
+    // Basis function gradients at the integration points
+    const int numNodes = assembler->getNumNodes();
+    const int numElements = assembler->getNumElements();
+    const int *connPtr;
+    const int *conn;
+    assembler->getElementConnectivity(&connPtr, &conn);
 
-    // Create an TACSToFH5 object for writing output to files
-    ElementType etype = TACS_PLANE_STRESS_ELEMENT;
-    int write_flag = (TACS_OUTPUT_CONNECTIVITY | TACS_OUTPUT_NODES | TACS_OUTPUT_DISPLACEMENTS | TACS_OUTPUT_STRAINS |
-                      TACS_OUTPUT_STRESSES | TACS_OUTPUT_EXTRAS);
-    TACSToFH5 *f5 = new TACSToFH5(assembler, etype, write_flag);
-    f5->incref();
-    f5->writeToFile("output.f5");
+    // Create a node vector
+    TACSBVec *nodeVec = assembler->createNodeVec();
+    nodeVec->incref();
+    assembler->getNodes(nodeVec);
 
-    // Free everything
-    f5->decref();
+    // Get the local node locations array
+    TacsScalar *Xpts = NULL;
+    nodeVec->getArray(&Xpts);
+
+    // Assume all elements are the same so we can just use the first one
+    TACSElement *const element = assembler->getElements()[0];
+    TACSElementBasis *const basis = element->getElementBasis();
+    const int numIntPoints = element->getNumQuadraturePoints();
+    const int numNodesPerElement = element->getNumNodes();
+    double *const intPointWeights = new double[numIntPoints];
+    double *const intPointN = new double[numIntPoints * numNodesPerElement];
+    // intPointNPrimeParam is a numIntPoints x numNodesPerElement x 2 array
+    // intPointNPrimeParam[i, j, k] is the kth component of the gradient (in parametric space) of the jth basis function
+    // at the ith integration point (dN_j/dx_k at gauss point i)
+    double *const intPointNPrimeParam = new double[numIntPoints * numNodesPerElement * 2];
+
+    for (int ii = 0; ii < numIntPoints; ii++) {
+      double pt[3];
+      intPointWeights[ii] = basis->getQuadraturePoint(ii, pt);
+      basis->computeBasisGradient(pt,
+                                  &intPointN[ii * numNodesPerElement],
+                                  &intPointNPrimeParam[ii * numNodesPerElement * 2]);
+      printf("\nInt point %d:\nweight = %f\nN = [", ii, intPointWeights[ii]);
+      for (int jj = 0; jj < numNodesPerElement; jj++) {
+        printf("%f ", intPointN[ii * numNodesPerElement + jj]);
+      }
+      printf("]\ndNdxi = [");
+      for (int jj = 0; jj < numNodesPerElement; jj++) {
+        printf("%f, %f\n",
+               intPointNPrimeParam[ii * (numNodesPerElement * 2) + (2 * jj)],
+               intPointNPrimeParam[ii * (numNodesPerElement * 2) + (2 * jj) + 1]);
+      }
+      printf("]\n");
+    }
+
+    // Free memory
+    delete[] intPointWeights;
+    delete[] intPointN;
+    delete[] intPointNPrimeParam;
   }
 
   MPI_Finalize();
@@ -217,4 +296,106 @@ void setAnalyticDisplacements(
 
   nodeVec->decref();
   dispVec->decref();
+}
+
+void writeTACSSolution(TACSAssembler *assembler, const char *filename) {
+  // Create an TACSToFH5 object for writing output to files
+  ElementType etype = TACS_PLANE_STRESS_ELEMENT;
+  int write_flag = (TACS_OUTPUT_CONNECTIVITY | TACS_OUTPUT_NODES | TACS_OUTPUT_DISPLACEMENTS | TACS_OUTPUT_STRAINS |
+                    TACS_OUTPUT_STRESSES | TACS_OUTPUT_EXTRAS);
+  TACSToFH5 *f5 = new TACSToFH5(assembler, etype, write_flag);
+  f5->incref();
+  f5->writeToFile(filename);
+
+  // Free everything
+  f5->decref();
+}
+
+void writeBCSRMatToFile(BCSRMatData *const matData, const char *filename) {
+  FILE *fp = fopen(filename, "w");
+  if (fp) {
+    const int nrows = matData->nrows;
+    const int ncols = matData->ncols;
+    const int bsize = matData->bsize;
+    const int *rowp = matData->rowp;
+    const int *cols = matData->cols;
+    const double *A = matData->A;
+    const int numBlocks = rowp[nrows];
+    const int nnz = numBlocks * bsize * bsize;
+    fprintf(fp, "%d %d %d\n", nrows * bsize, ncols * bsize, nnz);
+
+    // For each block row
+    for (int ii = 0; ii < nrows; ii++) {
+      const int rowStart = rowp[ii];
+      const int rowEnd = rowp[ii + 1];
+      // For each block in that row
+      for (int jj = rowStart; jj < rowEnd; jj++) {
+        const TacsScalar *const block = &A[bsize * bsize * jj];
+        // For each row and col in the block
+        for (int kk = 0; kk < bsize; kk++) {
+          const int globalRow = ii * bsize + kk;
+          for (int ll = 0; ll < bsize; ll++) {
+            const int globalCol = cols[jj] * bsize + ll;
+            fprintf(fp, "%d %d % .17g\n", globalRow, globalCol, block[bsize * kk + ll]);
+          }
+        }
+      }
+    }
+  }
+  else {
+    fprintf(stderr, "Failed to open file %s\n", filename);
+  }
+}
+
+void writeResidualToFile(TACSBVec *res, const char *filename) {
+  FILE *fp = fopen(filename, "w");
+  if (fp) {
+    // Get the residual array
+    TacsScalar *res_array;
+    res->getArray(&res_array);
+    int size;
+    res->getSize(&size);
+
+    // Write the residual to the file, one value per line
+    for (int ii = 0; ii < size; ii++) {
+      fprintf(fp, "% .17g\n", res_array[ii]);
+    }
+  }
+  else {
+    fprintf(stderr, "Failed to open file %s\n", filename);
+  }
+}
+
+template <elementParams elemParams>
+void a2dResidual(const int numElements,
+                 const int *const connPtr,
+                 const int *const conn,
+                 const TacsScalar *const Xpts,
+                 const TacsScalar *const states,
+                 const TacsScalar E,
+                 const TacsScalar nu,
+                 const TacsScalar t,
+                 TacsScalar *const res) {
+  // Create the energy stack which we will reuse for each element
+  // Inputs:
+  Mat<TacsScalar, elemParams.numNodes, elemParams.numDim> nodeCoords;
+  Mat<TacsScalar, elemParams.numNodes, elemParams.nunDim> NPrimeParam;
+  ADObj<Mat<TacsScalar, elemParams.numNodes, elemParams.numStates>> nodeStates;
+
+  // Intermediate variables
+  ADObj<Mat<TacsScalar, elemParams.numDim, elemParams.numDim>> J, Jinv;
+  ADObj<Mat<TacsScalar, elemParams.numStates, elemParams.numDim>> uPrime, uPrimeParam, F;
+  ADObj<Mat<TacsScalar, 2, 2>> stress, strain;
+  ADObj<TacsScalar> Energy;
+
+  auto EnergyStack = MakeStack(
+      // J = NPrimeParam^T * nodeCoords
+      // Jinv = inv(J)
+      // uPrimeParam = NPrimeParam^T * nodeStates
+      // uPrime = (Jinv * uPrimeParam)^T
+      // F = uPrime + I
+      // strain = 0.5 * (F^T * F - I) or 0.5 * (F + F^T) - I
+      // Stress = 2*mu*strain + lambda*tr(strain)*I
+      // Energy = 0.5 * tr(strain * stress)
+  );
 }
