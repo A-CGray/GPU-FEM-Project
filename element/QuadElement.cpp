@@ -36,9 +36,18 @@ class QuadElement {
     static const int numStates = _numStates;
     static const int numQuadPoints = (order + 1) * (order + 1);
 
+    /**
+     * @brief Given values at nodes, interpolate the values a point in the element
+     *
+     * @tparam valsPerNode The number of values defined at each node
+     * @param paramCoord Parametric coordinate to interpolate to
+     * @param nodalValues Values at the nodes (states, coordinates etc)
+     * @param interpValues Values at the point in the element
+     */
     template <int valsPerNode>
-    __HOST_AND_DEVICE__ static const void
-    interpolate(const numType paramCoord[], const numType nodalValues[], numType interpValues[]) {
+    __HOST_AND_DEVICE__ static const void interpolate(const numType paramCoord[numDim],
+                                                      const numType nodalValues[valsPerNode * numNodes],
+                                                      numType interpValues[valsPerNode]) {
       for (int ii = 0; ii < valsPerNode; ii++) {
         interpValues[ii] = 0.0;
       }
@@ -50,27 +59,45 @@ class QuadElement {
       }
     }
 
+    /**
+     * @brief Given values at nodes, interpolate the gradient at a point in the element
+     *
+     * @tparam valsPerNode The number of values defined at each node
+     * @param paramCoord Parametric coordinate to interpolate to
+     * @param nodalValues Values at the nodes (states, coordinates etc)
+     * @param interpGradValues Gradient at the point in the element (valsPerNode x 2)
+     */
     template <int valsPerNode>
-    __HOST_AND_DEVICE__ static const void
-    interpolateToQuadPt(const int quadPtInd, const numType nodalValues[], numType interpValues[]) {
-      for (int ii = 0; ii < valsPerNode; ii++) {
-        interpValues[ii] = 0.0;
+    __HOST_AND_DEVICE__ static const void interpolateGradient(const numType paramCoord[numDim],
+                                                              const numType nodalValues[valsPerNode * numNodes],
+                                                              numType interpGradValues[valsPerNode * numDim]) {
+      for (int ii = 0; ii < valsPerNode * numDim; ii++) {
+        interpGradValues[ii] = 0.0;
       }
       for (int jj = 0; jj < numNodes; jj++) {
-        const numType N = getQuadPtShapeFunc(quadPtInd, jj);
+        numType dNdx[2];
+        basis.evalDeriv(paramCoord, jj, dNdx);
         for (int ii = 0; ii < valsPerNode; ii++) {
-          interpValues[ii] += N * nodalValues[jj * valsPerNode + ii];
+          interpGradValues[ii * numDim] += dNdx[0] * nodalValues[jj * valsPerNode + ii];
+          interpGradValues[ii * numDim + 1] += dNdx[1] * nodalValues[jj * valsPerNode + ii];
         }
       }
     }
 
-    template <int valsPerNode>
-    __HOST_AND_DEVICE__ static const void
-    interpolateGradient(const numType paramCoord[], const numType nodalValues[], numType interpGradValues[]) {}
-
-    template <int valsPerNode>
-    __HOST_AND_DEVICE__ static const void
-    interpolateGradientToQuadPt(const int quadPtInd, const numType nodalValues[], numType interpGradValues[]) {}
+    /**
+     * @brief Transform a gradient w.r.t parametric coordinates to a gradient w.r.t real coordinates
+     *
+     * @tparam numVals
+     * @param paramCoord Parametric coordinate to transform at
+     * @param nodeCoords Node coordinates
+     * @param dfdxi Gradient w.r.t parametric coordinates
+     * @param dfdx Gradient w.r.t real coordinates
+     */
+    template <int numVals>
+    __HOST_AND_DEVICE__ static const void transformGradToRealSpace(const numType paramCoord[numDim],
+                                                                   const numType nodeCoords[numNodes * numDim],
+                                                                   const numType dfdxi[numVals * numDim],
+                                                                   numType dfdx[numVals * numDim]) {}
 
     // ==============================================================================
     // Specialized functions for evaluation at quadrature points
@@ -100,6 +127,24 @@ class QuadElement {
       getQuadPtCoord(quadPtInd, xParam);
       basis.evalDeriv(xParam, nodeXInd, nodeYInd, dNdx);
     }
+
+    template <int valsPerNode>
+    __HOST_AND_DEVICE__ static const void
+    interpolateToQuadPt(const int quadPtInd, const numType nodalValues[], numType interpValues[]) {
+      for (int ii = 0; ii < valsPerNode; ii++) {
+        interpValues[ii] = 0.0;
+      }
+      for (int jj = 0; jj < numNodes; jj++) {
+        const numType N = getQuadPtShapeFunc(quadPtInd, jj);
+        for (int ii = 0; ii < valsPerNode; ii++) {
+          interpValues[ii] += N * nodalValues[jj * valsPerNode + ii];
+        }
+      }
+    }
+
+    template <int valsPerNode>
+    __HOST_AND_DEVICE__ static const void
+    interpolateGradientToQuadPt(const int quadPtInd, const numType nodalValues[], numType interpGradValues[]) {}
 
   private:
     static constexpr GaussQuadrature quadrature = GaussQuadrature<order + 1>();
