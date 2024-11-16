@@ -31,7 +31,14 @@
 // Function prototypes
 // =============================================================================
 
-void createTACSAssembler(const char *filename, TACSAssembler *&assembler);
+void setupTACS(const char *filename,
+               TACSAssembler *&assembler,
+               TACSMeshLoader *&mesh,
+               TACSMaterialProperties *&props,
+               TACSPlaneStressConstitutive *&stiff,
+               TACSLinearElasticity2D *&model,
+               TACSElementBasis *&basis,
+               TACSElement2D *&elem);
 
 /**
  * @brief Compute the u and v displacements to set at the point (x, y)
@@ -53,7 +60,19 @@ void setAnalyticDisplacements(
     TACSAssembler *assembler,
     void (*const displacementFieldFunc)(const TacsScalar x, const TacsScalar y, TacsScalar &u, TacsScalar &v));
 
-void writeResidualToFile(TACSBVec *res, const char *filename);
+template <typename T>
+void writeArrayToFile(const T array[], const int n, const char *filename) {
+  FILE *fp = fopen(filename, "w");
+  if (fp) {
+    // Write the residual to the file, one value per line
+    for (int ii = 0; ii < n; ii++) {
+      fprintf(fp, "% .17g\n", array[ii]);
+    }
+  }
+  else {
+    fprintf(stderr, "Failed to open file %s\n", filename);
+  }
+}
 
 void writeBCSRMatToFile(BCSRMatData *const matData, const char *filename);
 

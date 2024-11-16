@@ -20,10 +20,17 @@
 // =============================================================================
 // Function definitions
 // =============================================================================
-void createTACSAssembler(const char *filename, TACSAssembler *&assembler) {
+void setupTACS(const char *filename,
+               TACSAssembler *&assembler,
+               TACSMeshLoader *&mesh,
+               TACSMaterialProperties *&props,
+               TACSPlaneStressConstitutive *&stiff,
+               TACSLinearElasticity2D *&model,
+               TACSElementBasis *&basis,
+               TACSElement2D *&elem) {
   // Create the mesh loader object on MPI_COMM_WORLD. The
   // TACSAssembler object will be created on the same comm
-  TACSMeshLoader *const mesh = new TACSMeshLoader(MPI_COMM_WORLD);
+  mesh = new TACSMeshLoader(MPI_COMM_WORLD);
   mesh->incref();
 
   // Create the isotropic material class
@@ -34,14 +41,17 @@ void createTACSAssembler(const char *filename, TACSAssembler *&assembler) {
   const TacsScalar ys = 400e6;
   const TacsScalar cte = 24.0e-6;
   const TacsScalar kappa = 230.0;
-  TACSMaterialProperties *const props = new TACSMaterialProperties(rho, specific_heat, E, nu, ys, cte, kappa);
+  const TacsScalar t = 1e-2;
+  props = new TACSMaterialProperties(rho, specific_heat, E, nu, ys, cte, kappa);
+  props->incref();
 
   // Create the stiffness object
-  TACSPlaneStressConstitutive *const stiff = new TACSPlaneStressConstitutive(props);
+  stiff = new TACSPlaneStressConstitutive(props, t, 0);
   stiff->incref();
 
   // Create the model class
-  TACSLinearElasticity2D *const model = new TACSLinearElasticity2D(stiff, TACS_NONLINEAR_STRAIN);
+  model = new TACSLinearElasticity2D(stiff, TACS_LINEAR_STRAIN);
+  model->incref();
 
   // Create the basis
   TACSElementBasis *linear_basis = new TACSLinearQuadBasis();
@@ -68,7 +78,6 @@ void createTACSAssembler(const char *filename, TACSAssembler *&assembler) {
     else {
       // Add the elements to the mesh loader class
       for (int i = 0; i < mesh->getNumComponents(); i++) {
-        TACSElement *elem = NULL;
 
         // Get the BDF description of the element
         const char *elem_descript = mesh->getElementDescript(i);
@@ -90,6 +99,9 @@ void createTACSAssembler(const char *filename, TACSAssembler *&assembler) {
           mesh->setElement(i, elem);
         }
       }
+      elem->incref();
+      basis = elem->getElementBasis();
+      basis->incref();
 
       // TODO: Define node reordering here?
 
@@ -97,7 +109,6 @@ void createTACSAssembler(const char *filename, TACSAssembler *&assembler) {
       int vars_per_node = 2;
       assembler = mesh->createTACS(vars_per_node);
       assembler->incref();
-      mesh->decref();
     }
   }
   else {
@@ -184,25 +195,6 @@ void writeBCSRMatToFile(BCSRMatData *const matData, const char *filename) {
           }
         }
       }
-    }
-  }
-  else {
-    fprintf(stderr, "Failed to open file %s\n", filename);
-  }
-}
-
-void writeResidualToFile(TACSBVec *res, const char *filename) {
-  FILE *fp = fopen(filename, "w");
-  if (fp) {
-    // Get the residual array
-    TacsScalar *res_array;
-    res->getArray(&res_array);
-    int size;
-    res->getSize(&size);
-
-    // Write the residual to the file, one value per line
-    for (int ii = 0; ii < size; ii++) {
-      fprintf(fp, "% .17g\n", res_array[ii]);
     }
   }
   else {

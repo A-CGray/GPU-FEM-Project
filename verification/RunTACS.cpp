@@ -16,6 +16,8 @@
 // Extension Includes
 // =============================================================================
 // #include "../element/ElementStruct.h"
+#include "../element/ResidualKernelPrototype.h"
+#include "TACSElementVerification.h"
 #include "TACSHelpers.h"
 
 // =============================================================================
@@ -35,11 +37,17 @@ int main(int argc, char *argv[]) {
   // The TACSAssembler object - which should be allocated if the mesh
   // is loaded correctly
   TACSAssembler *assembler = NULL;
+  TACSMeshLoader *mesh = nullptr;
+  TACSMaterialProperties *props = nullptr;
+  TACSPlaneStressConstitutive *stiff = nullptr;
+  TACSLinearElasticity2D *model = nullptr;
+  TACSElementBasis *basis = nullptr;
+  TACSElement2D *element = nullptr;
 
   // Try to load the input file as a BDF file through the
   // TACSMeshLoader class
   if (argc > 1) {
-    createTACSAssembler(argv[1], assembler);
+    setupTACS(argv[1], assembler, mesh, props, stiff, model, basis, element);
   }
   else {
     fprintf(stderr, "No BDF file provided\n");
@@ -52,7 +60,7 @@ int main(int argc, char *argv[]) {
     writeTACSSolution(assembler, "output.f5");
 
     // --- Evaluate Jacobian and residual and write them to file ---
-    TACSAssembler::OrderingType matOrder = TACSAssembler::AMD_ORDER;
+    TACSAssembler::OrderingType matOrder = TACSAssembler::NATURAL_ORDER;
     TACSSchurMat *mat = assembler->createSchurMat(matOrder);
     assembler->assembleJacobian(1.0, 0.0, 0.0, NULL, mat);
     BCSRMat *jac;
@@ -75,107 +83,167 @@ int main(int argc, char *argv[]) {
     else {
       printf("Assembler is not reordered\n");
     }
-    writeResidualToFile(res, "TACSResidual.csv");
 
-    // --- Get the data required for the GPU kernel ---
+    // Get the residual array
+    TacsScalar *tacsResArray;
+    res->getArray(&tacsResArray);
+    int resSize;
+    res->getSize(&resSize);
+    writeArrayToFile<TacsScalar>(tacsResArray, resSize, "TACSResidual.csv");
+
+    // --- Get the data required for the kernel ---
     // number of nodes & elements
-    // Node coordinates
+    // Node coordinates and states
     // Element Connectivity
     // Integration point weights
     // Basis function gradients at the integration points
+    // Material properties
     const int numNodes = assembler->getNumNodes();
     const int numElements = assembler->getNumElements();
     const int *connPtr;
     const int *conn;
     assembler->getElementConnectivity(&connPtr, &conn);
 
+    // Get the material properties
+    TacsScalar E, nu, t;
+    props->getIsotropicProperties(&E, &nu);
+    stiff->getDesignVars(0, 1, &t);
+
     // Create a node vector
     TACSBVec *nodeVec = assembler->createNodeVec();
     nodeVec->incref();
     assembler->getNodes(nodeVec);
 
-    // Get the local node locations array
+    // Get the local node coordinates array and convert it to 2D
     TacsScalar *Xpts = NULL;
     nodeVec->getArray(&Xpts);
+    double *const xPts2d = new double[numNodes * 2];
+    for (int ii = 0; ii < numNodes; ii++) {
+      xPts2d[ii * 2] = TacsRealPart(Xpts[ii * 3]);
+      xPts2d[ii * 2 + 1] = TacsRealPart(Xpts[ii * 3 + 1]);
+    }
 
-    // Assume all elements are the same so we can just use the first one
-    TACSElement *const element = assembler->getElements()[0];
-    TACSElementBasis *const basis = element->getElementBasis();
-    const int numIntPoints = element->getNumQuadraturePoints();
+    // Get the state variables
+    TACSBVec *dispVec = assembler->createVec();
+    dispVec->incref();
+    assembler->getVariables(dispVec);
+
+    TacsScalar *disp;
+    dispVec->getArray(&disp);
+
+    // Get data about the element
+    const int numQuadPts = element->getNumQuadraturePoints();
     const int numNodesPerElement = element->getNumNodes();
-    double *const intPointWeights = new double[numIntPoints];
-    double *const intPointN = new double[numIntPoints * numNodesPerElement];
-    // intPointNPrimeParam is a numIntPoints x numNodesPerElement x 2 array
-    // intPointNPrimeParam[i, j, k] is the kth component of the gradient (in parametric space) of the jth basis
+    double *const quadPtWeights = new double[numQuadPts];
+    double *const quadPtN = new double[numQuadPts * numNodesPerElement];
+    // quadPointdNdxi is a numQuadPts x numNodesPerElement x 2 array
+    // quadPointdNdxi[i, j, k] is the kth component of the gradient (in parametric space) of the jth basis
     // function at the ith integration point (dN_j/dx_k at gauss point i)
-    double *const intPointNPrimeParam = new double[numIntPoints * numNodesPerElement * 2];
+    double *const quadPointdNdxi = new double[numQuadPts * numNodesPerElement * 2];
 
-    for (int ii = 0; ii < numIntPoints; ii++) {
+    for (int ii = 0; ii < numQuadPts; ii++) {
       double pt[3];
-      intPointWeights[ii] = basis->getQuadraturePoint(ii, pt);
-      basis->computeBasisGradient(pt,
-                                  &intPointN[ii * numNodesPerElement],
-                                  &intPointNPrimeParam[ii * numNodesPerElement * 2]);
-      printf("\nInt point %d:\nweight = %f\nN = [", ii, intPointWeights[ii]);
+      quadPtWeights[ii] = basis->getQuadraturePoint(ii, pt);
+      basis->computeBasisGradient(pt, &quadPtN[ii * numNodesPerElement], &quadPointdNdxi[ii * numNodesPerElement * 2]);
+      printf("\nInt point %d:\nweight = %f\nN = [", ii, quadPtWeights[ii]);
       for (int jj = 0; jj < numNodesPerElement; jj++) {
-        printf("%f ", intPointN[ii * numNodesPerElement + jj]);
+        printf("%f ", quadPtN[ii * numNodesPerElement + jj]);
       }
       printf("]\ndNdxi = [");
       for (int jj = 0; jj < numNodesPerElement; jj++) {
         printf("%f, %f\n",
-               intPointNPrimeParam[ii * (numNodesPerElement * 2) + (2 * jj)],
-               intPointNPrimeParam[ii * (numNodesPerElement * 2) + (2 * jj) + 1]);
+               quadPointdNdxi[ii * (numNodesPerElement * 2) + (2 * jj)],
+               quadPointdNdxi[ii * (numNodesPerElement * 2) + (2 * jj) + 1]);
       }
       printf("]\n");
     }
 
+    // Create an array for the kernel computed residual then call it
+    double *const kernelRes = new double[numNodes * 2];
+    memset(kernelRes, 0, numNodes * 2 * sizeof(double));
+    // We need a bunch of if statements here because the kernel is templated on the number of nodes, which we only know
+    // at runtime
+    switch (numNodesPerElement) {
+      case 4:
+        assemblePlaneStressResidual<4, 2, 4, 2>(connPtr,
+                                                conn,
+                                                numElements,
+                                                disp,
+                                                xPts2d,
+                                                quadPtWeights,
+                                                quadPointdNdxi,
+                                                E,
+                                                nu,
+                                                t,
+                                                kernelRes);
+        break;
+      case 9:
+        assemblePlaneStressResidual<9, 2, 9, 2>(connPtr,
+                                                conn,
+                                                numElements,
+                                                disp,
+                                                xPts2d,
+                                                quadPtWeights,
+                                                quadPointdNdxi,
+                                                E,
+                                                nu,
+                                                t,
+                                                kernelRes);
+        break;
+      case 16:
+        assemblePlaneStressResidual<16, 2, 16, 2>(connPtr,
+                                                  conn,
+                                                  numElements,
+                                                  disp,
+                                                  xPts2d,
+                                                  quadPtWeights,
+                                                  quadPointdNdxi,
+                                                  E,
+                                                  nu,
+                                                  t,
+                                                  kernelRes);
+        break;
+      case 25:
+        assemblePlaneStressResidual<25, 2, 25, 2>(connPtr,
+                                                  conn,
+                                                  numElements,
+                                                  disp,
+                                                  xPts2d,
+                                                  quadPtWeights,
+                                                  quadPointdNdxi,
+                                                  E,
+                                                  nu,
+                                                  t,
+                                                  kernelRes);
+        break;
+      default:
+        break;
+    }
+
+    writeArrayToFile<TacsScalar>(kernelRes, resSize, "KernelResidual.csv");
+
+    // Compute the error
+    int maxAbsErrInd, maxRelErrorInd;
+    double maxAbsError = TacsGetMaxError(kernelRes, tacsResArray, resSize, &maxAbsErrInd);
+    double maxRelError = TacsGetMaxRelError(kernelRes, tacsResArray, resSize, &maxRelErrorInd);
+    bool residualMatch = TacsAssertAllClose(kernelRes, tacsResArray, resSize, 1e-8, 1e-8);
+    if (residualMatch) {
+      printf("Residuals match\n");
+    }
+    else {
+      printf("Residuals do not match\n");
+    }
+    printf("Max Err: %10.4e in component %d.\n", maxAbsError, maxAbsErrInd);
+    printf("Max REr: %10.4e in component %d.\n", maxRelError, maxRelErrorInd);
+
     // Free memory
-    delete[] intPointWeights;
-    delete[] intPointN;
-    delete[] intPointNPrimeParam;
+    delete[] quadPtWeights;
+    delete[] quadPtN;
+    delete[] quadPointdNdxi;
+    delete[] xPts2d;
+    delete[] kernelRes;
   }
 
   MPI_Finalize();
   return 0;
 }
-
-// =============================================================================
-// Function definitions
-// =============================================================================
-
-// template <elementParams elemParams>
-// void a2dResidual(const int numElements,
-//                  const int *const connPtr,
-//                  const int *const conn,
-//                  const TacsScalar *const Xpts,
-//                  const TacsScalar *const states,
-//                  const TacsScalar E,
-//                  const TacsScalar nu,
-//                  const TacsScalar t,
-//                  TacsScalar *const res) {
-//   // // Create the energy stack which we will reuse for each element
-//   // // Inputs:
-//   // Mat<TacsScalar, elemParams.numNodes, elemParams.numDim> nodeCoords;
-//   // Mat<TacsScalar, elemParams.numNodes, elemParams.nunDim> NPrimeParam;
-//   // ADObj<Mat<TacsScalar, elemParams.numNodes, elemParams.numStates>> nodeStates;
-
-//   // // Intermediate variables
-//   // ADObj<Mat<TacsScalar, elemParams.numDim, elemParams.numDim>> J, Jinv;
-//   // ADObj<Mat<TacsScalar, elemParams.numStates, elemParams.numDim>> uPrime, uPrimeParam, F;
-//   // ADObj<Mat<TacsScalar, 2, 2>> stress, strain;
-//   // ADObj<TacsScalar> Energy;
-
-//   // auto EnergyStack = MakeStack(
-//   //     // J = NPrimeParam^T * nodeCoords
-//   //     // Jinv = inv(J)
-//   //     // uPrimeParam = NPrimeParam^T * nodeStates
-//   //     // uPrime = (Jinv * uPrimeParam)^T
-//   //     // F = uPrime + I
-//   //     // strain = 0.5 * (F^T * F - I) or 0.5 * (F + F^T) - I
-//   //     // Stress = 2*mu*strain + lambda*tr(strain)*I
-//   //     // Energy = 0.5 * tr(strain * stress)
-//   // );
-
-//   for (int ii = 0; ii < numElements; ii++) {
-//   }
-// }
