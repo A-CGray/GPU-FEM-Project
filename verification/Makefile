@@ -1,6 +1,6 @@
 include ../Makefile.in
 
-CXXFLAGS = -std=c++17 #-Wall -Wextra -pedantic -Wno-unused-parameter
+CXXFLAGS = -std=c++17 -fopenmp #-Wall -Wextra -pedantic -Wno-unused-parameter
 CXXOPTFLAGS = -Ofast -march=native -mtune=native
 CXXDEBUGFLAGS = -g
 

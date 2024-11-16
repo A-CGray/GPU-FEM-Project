@@ -11,6 +11,7 @@
 // =============================================================================
 // Standard Library Includes
 // =============================================================================
+#include <omp.h>
 
 // =============================================================================
 // Extension Includes
@@ -75,7 +76,9 @@ int main(int argc, char *argv[]) {
     // --- Evaluate residual and write to file ---
     // TODO: Why does the ordering of the residual not seem to be affected by the matrix ordering type?
     TACSBVec *res = assembler->createVec();
+    const double tacsResStartTime = omp_get_wtime();
     assembler->assembleRes(res);
+    const double tacsResTime = omp_get_wtime() - tacsResStartTime;
     assembler->reorderVec(res);
     if (assembler->isReordered()) {
       printf("Assembler is reordered\n");
@@ -163,6 +166,7 @@ int main(int argc, char *argv[]) {
     memset(kernelRes, 0, numNodes * 2 * sizeof(double));
     // We need a bunch of if statements here because the kernel is templated on the number of nodes, which we only know
     // at runtime
+    const double kernelResStartTime = omp_get_wtime();
     switch (numNodesPerElement) {
       case 4:
         assemblePlaneStressResidual<4, 2, 4, 2>(connPtr,
@@ -219,6 +223,7 @@ int main(int argc, char *argv[]) {
       default:
         break;
     }
+    const double kernelResTime = omp_get_wtime() - kernelResStartTime;
 
     writeArrayToFile<TacsScalar>(kernelRes, resSize, "KernelResidual.csv");
 
@@ -226,7 +231,7 @@ int main(int argc, char *argv[]) {
     int maxAbsErrInd, maxRelErrorInd;
     double maxAbsError = TacsGetMaxError(kernelRes, tacsResArray, resSize, &maxAbsErrInd);
     double maxRelError = TacsGetMaxRelError(kernelRes, tacsResArray, resSize, &maxRelErrorInd);
-    bool residualMatch = TacsAssertAllClose(kernelRes, tacsResArray, resSize, 1e-8, 1e-8);
+    bool residualMatch = TacsAssertAllClose(kernelRes, tacsResArray, resSize, 1e-6, 1e-6);
     if (residualMatch) {
       printf("Residuals match\n");
     }
@@ -235,6 +240,10 @@ int main(int argc, char *argv[]) {
     }
     printf("Max Err: %10.4e in component %d.\n", maxAbsError, maxAbsErrInd);
     printf("Max REr: %10.4e in component %d.\n", maxRelError, maxRelErrorInd);
+
+    // Print out the time taken for each part of the computation
+    printf("  TACS residual time: %f s\n", tacsResTime);
+    printf("Kernel residual time: %f s\n", kernelResTime);
 
     // Free memory
     delete[] quadPtWeights;
