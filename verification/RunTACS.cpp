@@ -148,27 +148,89 @@ int main(int argc, char *argv[]) {
       double pt[3];
       quadPtWeights[ii] = basis->getQuadraturePoint(ii, pt);
       basis->computeBasisGradient(pt, &quadPtN[ii * numNodesPerElement], &quadPointdNdxi[ii * numNodesPerElement * 2]);
-      printf("\nInt point %d:\nweight = %f\nN = [", ii, quadPtWeights[ii]);
-      for (int jj = 0; jj < numNodesPerElement; jj++) {
-        printf("%f ", quadPtN[ii * numNodesPerElement + jj]);
-      }
-      printf("]\ndNdxi = [");
-      for (int jj = 0; jj < numNodesPerElement; jj++) {
-        printf("%f, %f\n",
-               quadPointdNdxi[ii * (numNodesPerElement * 2) + (2 * jj)],
-               quadPointdNdxi[ii * (numNodesPerElement * 2) + (2 * jj) + 1]);
-      }
-      printf("]\n");
     }
 
     // Create an array for the kernel computed residual then call it
     double *const kernelRes = new double[numNodes * 2];
     memset(kernelRes, 0, numNodes * 2 * sizeof(double));
-    // We need a bunch of if statements here because the kernel is templated on the number of nodes, which we only know
-    // at runtime
+
+// If running on the GPU, allocate memory for the GPU data and transfer it over
+#ifdef __CUDACC__
+    int *d_connPtr;
+    cudaMalloc(&d_connPtr, numElements * sizeof(int));
+    cudaMemcpy(d_connPtr, connPtr, numElements * sizeof(int), cudaMemcpyHostToDevice);
+
+    int *d_conn;
+    cudaMalloc(&d_conn, numElements * numNodesPerElement * sizeof(int));
+    cudaMemcpy(d_conn, conn, numElements * numNodesPerElement * sizeof(int), cudaMemcpyHostToDevice);
+
+    int *d_numElements;
+    cudaMalloc(&d_numElements, sizeof(int));
+    cudaMemcpy(d_numElements, numElements, sizeof(int), cudaMemcpyHostToDevice);
+
+    double *d_disp;
+    cudaMalloc(&d_disp, 2 * numNodes * sizeof(double));
+    cudaMemcpy(d_disp, disp, 2 * numNodes * sizeof(double));
+
+    double *d_xPts2d;
+    cudaMalloc(&d_xPts2d, 2 * numNodes * sizeof(double));
+    cudaMemcpy(d_xPts2d, xPts2d, 2 * numNodes * sizeof(double));
+
+    double *d_quadPtWeights;
+    cudaMalloc(&d_quadPtWeights, numQuadPts * sizeof(double));
+    cudaMemcpy(d_quadPtWeights, quadPtWeights, numQuadPts * sizeof(double));
+
+    double *d_quadPointdNdxi;
+    cudaMalloc(&d_quadPointdNdxi, numQuadPts * numNodesPerElement * 2 * sizeof(double));
+    cudaMemcpy(d_quadPointdNdxi, quadPointdNdxi, numQuadPts * numNodesPerElement * 2 * sizeof(double));
+
+    double *d_E;
+    cudaMalloc(&d_E, sizeof(double));
+    cudaMemcpy(d_E, &E, sizeof(double));
+
+    double *d_nu;
+    cudaMalloc(&d_nu, sizeof(double));
+    cudaMemcpy(d_nu, &nu, sizeof(double));
+
+    double *d_t;
+    cudaMalloc(&d_t, sizeof(double));
+    cudaMemcpy(d_t, &t, sizeof(double));
+
+    double *d_kernelRes;
+    cudaMalloc(&d_kernelRes, numNodes * 2 * sizeof(double));
+    cudaMemcpy(d_kernelRes, kernelRes, numNodes * 2 * sizeof(double));
+
+    // Figure out how many blocks and threads to use
+    threadsPerBlock = 4 * 32;
+    numBlocks = (numElements + threadsPerBlock - 1) / threadsPerBlock;
+#endif
+
+#ifdef __CUDACC__
+    // --- Create timing events ---
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
+#else
     const double kernelResStartTime = omp_get_wtime();
+#endif
+    // We need a bunch of if statements here because the kernel is templated on the number of nodes, which we only
+    // know at runtime
     switch (numNodesPerElement) {
       case 4:
+#ifdef __CUDACC__
+        assemblePlaneStressResidualKernel<4, 2, 4, 2><<<numBlocks, threadsPerBlock>>>(d_connPtr,
+                                                                                      d_conn,
+                                                                                      d_numElements,
+                                                                                      d_disp,
+                                                                                      d_xPts2d,
+                                                                                      d_quadPtWeights,
+                                                                                      d_quadPointdNdxi,
+                                                                                      d_E,
+                                                                                      d_nu,
+                                                                                      d_t,
+                                                                                      d_kernelRes);
+#else
         assemblePlaneStressResidual<4, 2, 4, 2>(connPtr,
                                                 conn,
                                                 numElements,
@@ -180,8 +242,22 @@ int main(int argc, char *argv[]) {
                                                 nu,
                                                 t,
                                                 kernelRes);
+#endif
         break;
       case 9:
+#ifdef __CUDACC__
+        assemblePlaneStressResidualKernel<9, 2, 9, 2><<<numBlocks, threadsPerBlock>>>(d_connPtr,
+                                                                                      d_conn,
+                                                                                      d_numElements,
+                                                                                      d_disp,
+                                                                                      d_xPts2d,
+                                                                                      d_quadPtWeights,
+                                                                                      d_quadPointdNdxi,
+                                                                                      d_E,
+                                                                                      d_nu,
+                                                                                      d_t,
+                                                                                      d_kernelRes);
+#else
         assemblePlaneStressResidual<9, 2, 9, 2>(connPtr,
                                                 conn,
                                                 numElements,
@@ -193,8 +269,22 @@ int main(int argc, char *argv[]) {
                                                 nu,
                                                 t,
                                                 kernelRes);
+#endif
         break;
       case 16:
+#ifdef __CUDACC__
+        assemblePlaneStressResidualKernel<16, 2, 16, 2><<<numBlocks, threadsPerBlock>>>(d_connPtr,
+                                                                                        d_conn,
+                                                                                        d_numElements,
+                                                                                        d_disp,
+                                                                                        d_xPts2d,
+                                                                                        d_quadPtWeights,
+                                                                                        d_quadPointdNdxi,
+                                                                                        d_E,
+                                                                                        d_nu,
+                                                                                        d_t,
+                                                                                        d_kernelRes);
+#else
         assemblePlaneStressResidual<16, 2, 16, 2>(connPtr,
                                                   conn,
                                                   numElements,
@@ -206,8 +296,22 @@ int main(int argc, char *argv[]) {
                                                   nu,
                                                   t,
                                                   kernelRes);
+#endif
         break;
       case 25:
+#ifdef __CUDACC__
+        assemblePlaneStressResidualKernel<25, 2, 25, 2><<<numBlocks, threadsPerBlock>>>(d_connPtr,
+                                                                                        d_conn,
+                                                                                        d_numElements,
+                                                                                        d_disp,
+                                                                                        d_xPts2d,
+                                                                                        d_quadPtWeights,
+                                                                                        d_quadPointdNdxi,
+                                                                                        d_E,
+                                                                                        d_nu,
+                                                                                        d_t,
+                                                                                        d_kernelRes);
+#else
         assemblePlaneStressResidual<25, 2, 25, 2>(connPtr,
                                                   conn,
                                                   numElements,
@@ -219,11 +323,23 @@ int main(int argc, char *argv[]) {
                                                   nu,
                                                   t,
                                                   kernelRes);
+#endif
         break;
       default:
         break;
     }
+#ifdef __CUDACC__
+    cudaDeviceSynchronize();
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&runTime, start, stop);
+    runTime /= 1000; // Convert to seconds
+
+    // Copy the residual back to the CPU
+    cudaMemcpy(kernelRes, d_kernelRes, numNodes * 2 * sizeof(double), cudaMemcpyDeviceToHost);
+#else
     const double kernelResTime = omp_get_wtime() - kernelResStartTime;
+#endif
 
     writeArrayToFile<TacsScalar>(kernelRes, resSize, "KernelResidual.csv");
 
@@ -251,6 +367,19 @@ int main(int argc, char *argv[]) {
     delete[] quadPointdNdxi;
     delete[] xPts2d;
     delete[] kernelRes;
+#ifdef __CUDACC__
+    cudaFree(d_connPtr);
+    cudaFree(d_conn);
+    cudaFree(d_numElements);
+    cudaFree(d_disp);
+    cudaFree(d_xPts2d);
+    cudaFree(d_quadPtWeights);
+    cudaFree(d_quadPointdNdxi);
+    cudaFree(d_E);
+    cudaFree(d_nu);
+    cudaFree(d_t);
+    cudaFree(d_kernelRes);
+#endif
   }
 
   MPI_Finalize();

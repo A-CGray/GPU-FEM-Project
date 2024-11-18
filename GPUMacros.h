@@ -5,6 +5,7 @@
 #define SYNC_THREADS
 #define __HOST_AND_DEVICE__
 #define __DEVICE__
+#define __GLOBAL__
 #define A2D_FUNCTION
 
 #else
@@ -12,6 +13,7 @@
 #define SYNC_THREADS __syncthreads();
 #define __HOST_AND_DEVICE__ __host__ __device__
 #define __DEVICE__ __device__
+#define __GLOBAL__ __global__
 #define A2D_FUNCTION __host__ __device__
 
 #endif
