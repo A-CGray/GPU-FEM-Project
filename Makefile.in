@@ -19,6 +19,28 @@ TACS_INCLUDE = -I${TACS_DIR}/src \
 	-I${TACS_DIR}/src/functions \
 	-I${TACS_DIR}/src/io
 
+# GPU compile
+GPU := true
+GPU_CXX := nvcc
+GPU_CC_FLAGS :=
+MPI_INC =
+MPI_LIB =
+CUDA_LIBS :=
+
+ifeq ($(GPU), true)
+    # dynamically add MPI_INC and MPI_LIB from MPI compiler
+    # since NVIDIA CUDA compiler not linked to MPI
+    MPI_INC := $(shell ${CXX} -showme:incdirs | sed 's|[^ ]*|-I&|g')
+    MPI_LIB := $(shell ${CXX} -showme:libdirs | sed 's|[^ ]*|-L&|g') -lmpi
+    CUDA_LIBS := -L/usr/local/cuda/lib64 -lcudart
+
+    CXX := $(GPU_CXX)
+    # temporarily suppressing warnings with -w
+    GPU_CC_FLAGS := -w -x cu -Xcompiler
+    # optional sometimes need to downgrade gcc under the hood compiler
+    # GPU_CC_FLAGS := --compiler-bindir=/usr/bin/gcc-10 -std=c++17 -x cu -Xcompiler
+endif
+
 # Set the command line flags to use for compilation
 TACS_OPT_CC_FLAGS = ${TACS_DEF} ${EXTRA_CC_FLAGS} ${METIS_INCLUDE} ${AMD_INCLUDE} ${TECIO_INCLUDE} ${TACS_INCLUDE}
 TACS_DEBUG_CC_FLAGS = ${TACS_DEF} ${EXTRA_DEBUG_CC_FLAGS} ${METIS_INCLUDE} ${AMD_INCLUDE} ${TECIO_INCLUDE} ${TACS_INCLUDE}
