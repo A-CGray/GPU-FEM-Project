@@ -21,6 +21,7 @@
 // Function definitions
 // =============================================================================
 void setupTACS(const char *filename,
+               const TACSAssembler::OrderingType nodeOrdering,
                TACSAssembler *&assembler,
                TACSMeshLoader *&mesh,
                TACSMaterialProperties *&props,
@@ -106,8 +107,8 @@ void setupTACS(const char *filename,
       // TODO: Define node reordering here?
 
       // Now, create the TACSAssembler object
-      int vars_per_node = 2;
-      assembler = mesh->createTACS(vars_per_node);
+      const int vars_per_node = 2;
+      assembler = mesh->createTACS(vars_per_node, nodeOrdering);
       assembler->incref();
     }
   }

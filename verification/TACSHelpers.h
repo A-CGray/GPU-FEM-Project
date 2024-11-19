@@ -17,6 +17,7 @@
 // =============================================================================
 // Extension Includes
 // =============================================================================
+#include "TACSAssembler.h"
 #include "TACSElement2D.h"
 #include "TACSLinearElasticity.h"
 #include "TACSMeshLoader.h"
@@ -32,6 +33,7 @@
 // =============================================================================
 
 void setupTACS(const char *filename,
+               const TACSAssembler::OrderingType nodeOrdering,
                TACSAssembler *&assembler,
                TACSMeshLoader *&mesh,
                TACSMaterialProperties *&props,

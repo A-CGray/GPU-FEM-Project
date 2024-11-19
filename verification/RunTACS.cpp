@@ -18,6 +18,7 @@
 // =============================================================================
 // #include "../element/ElementStruct.h"
 #include "../element/ResidualKernelPrototype.h"
+#include "TACSAssembler.h"
 #include "TACSElementVerification.h"
 #include "TACSHelpers.h"
 
@@ -45,10 +46,12 @@ int main(int argc, char *argv[]) {
   TACSElementBasis *basis = nullptr;
   TACSElement2D *element = nullptr;
 
+  TACSAssembler::OrderingType nodeOrdering = TACSAssembler::RCM_ORDER;
+
   // Try to load the input file as a BDF file through the
   // TACSMeshLoader class
   if (argc > 1) {
-    setupTACS(argv[1], assembler, mesh, props, stiff, model, basis, element);
+    setupTACS(argv[1], nodeOrdering, assembler, mesh, props, stiff, model, basis, element);
   }
   else {
     fprintf(stderr, "No BDF file provided\n");
@@ -61,8 +64,7 @@ int main(int argc, char *argv[]) {
     writeTACSSolution(assembler, "output.f5");
 
     // --- Evaluate Jacobian and residual and write them to file ---
-    TACSAssembler::OrderingType matOrder = TACSAssembler::NATURAL_ORDER;
-    TACSSchurMat *mat = assembler->createSchurMat(matOrder);
+    TACSSchurMat *mat = assembler->createSchurMat(nodeOrdering);
     assembler->assembleJacobian(1.0, 0.0, 0.0, NULL, mat);
     BCSRMat *jac;
     mat->getBCSRMat(&jac, NULL, NULL, NULL);
