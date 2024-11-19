@@ -24,7 +24,7 @@ if __name__ == "__main__":
     plt.style.use(niceplots.get_style())
 
     niceColors = niceplots.get_colors()
-    A = readSparseCOOMat("jacobian.mtx")
+    A = readSparseCOOMat("TACSJacobian.mtx")
     markerSize = max(200 / A.shape[0], 0.1)
     plt.spy(A, c=niceColors["Yellow"], marker="s", markeredgecolor=niceColors["Yellow"], markersize=markerSize)
     plt.show()
