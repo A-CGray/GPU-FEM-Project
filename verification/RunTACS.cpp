@@ -11,7 +11,6 @@
 // =============================================================================
 // Standard Library Includes
 // =============================================================================
-#include <omp.h>
 
 // =============================================================================
 // Extension Includes
@@ -46,7 +45,8 @@ int main(int argc, char *argv[]) {
   TACSElementBasis *basis = nullptr;
   TACSElement2D *element = nullptr;
 
-  TACSAssembler::OrderingType nodeOrdering = TACSAssembler::RCM_ORDER;
+  // TODO: Figure out why TACS and kernel residual order doesn't match if I choose non-natural ordering
+  TACSAssembler::OrderingType nodeOrdering = TACSAssembler::NATURAL_ORDER;
 
   // Try to load the input file as a BDF file through the
   // TACSMeshLoader class
@@ -78,9 +78,9 @@ int main(int argc, char *argv[]) {
     // --- Evaluate residual and write to file ---
     // TODO: Why does the ordering of the residual not seem to be affected by the matrix ordering type?
     TACSBVec *res = assembler->createVec();
-    const double tacsResStartTime = omp_get_wtime();
+    const double tacsResStartTime = 0.0; // omp_get_wtime();
     assembler->assembleRes(res);
-    const double tacsResTime = omp_get_wtime() - tacsResStartTime;
+    const double tacsResTime = 0.0; // omp_get_wtime() - tacsResStartTime;
     assembler->reorderVec(res);
     if (assembler->isReordered()) {
       printf("Assembler is reordered\n");
@@ -214,7 +214,7 @@ int main(int argc, char *argv[]) {
     cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
 #else
-    const double kernelResStartTime = omp_get_wtime();
+    const double kernelResStartTime = 0.0; // omp_get_wtime();
 #endif
     // We need a bunch of if statements here because the kernel is templated on the number of nodes, which we only
     // know at runtime
@@ -340,7 +340,7 @@ int main(int argc, char *argv[]) {
     // Copy the residual back to the CPU
     cudaMemcpy(kernelRes, d_kernelRes, numNodes * 2 * sizeof(double), cudaMemcpyDeviceToHost);
 #else
-    const double kernelResTime = omp_get_wtime() - kernelResStartTime;
+    const double kernelResTime = 0.0; // omp_get_wtime() - kernelResStartTime;
 #endif
 
     writeArrayToFile<TacsScalar>(kernelRes, resSize, "KernelResidual.csv");
