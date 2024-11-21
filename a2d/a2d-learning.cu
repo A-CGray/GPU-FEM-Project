@@ -11,7 +11,7 @@ using namespace A2D;
 #define N 3
 
 // __host__ __device__ T randomNum() { return T(std::rand()) / RAND_MAX; }
-__host__ __device__ T randomNum() { return T(0.81763258476152387654) }
+__host__ __device__ T randomNum() volatile { return T(0.81763258476152387654); }
 
 template <typename I, typename numType>
 __host__ __device__ void print_row_major_matrix(const std::string name, I height, I width, numType mat[]) {
@@ -105,15 +105,14 @@ __global__ void a2dTestKernel() {
   quadFormStack.reverse();
 
   // Print the results
-  std::cout << "\n\nf(x) = 1/2 * x^T A x + b^T x\ndf/dx = [ ";
-  for (int ii = 0; ii < N; ii++) {
-    std::cout << xVec.bvalue()[ii] << " ";
+  printf("\n\nf(x) = 1/2 * x^T A x + b^T x\ndf/dx = [ ";) for (int ii = 0; ii < N; ii++) {
+    printf("%f ", xVec.bvalue()[ii]);
   }
-  std::cout << "], Reference = [ ";
+  printf("], Reference = [ ");
   for (int ii = 0; ii < N; ii++) {
-    std::cout << Axb[ii] << " ";
+    printf("%f ", Axb[ii]);
   }
-  std::cout << "]" << std::endl;
+  printf("]\n");
 
   // --- Verify that d^2f/dx^2 = A ---
   Mat<T, N, N> Hessian;
