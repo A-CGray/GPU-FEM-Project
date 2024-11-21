@@ -4,23 +4,21 @@ A2D_INCLUDE = -I${A2D_DIR}/include
 
 # declare TACS location
 TACS_DIR = ${HOME}/repos/tacs
-include ${TACS_DIR}/Makefile.in
 
-TACS_LIB = ${TACS_DIR}/lib/libtacs.a
+CXX = icpc -lmpi
+CXX = g++ -lmpi
+RM = rm -f
 
-TACS_INCLUDE = -I${TACS_DIR}/src \
-	-I${TACS_DIR}/src/bpmat \
-	-I${TACS_DIR}/src/elements \
-	-I${TACS_DIR}/src/elements/a2d \
-	-I${TACS_DIR}/src/elements/dynamics \
-	-I${TACS_DIR}/src/elements/basis \
-	-I${TACS_DIR}/src/elements/shell \
-	-I${TACS_DIR}/src/constitutive \
-	-I${TACS_DIR}/src/functions \
-	-I${TACS_DIR}/src/io
+# declare location of this directory for the GPU Macros
+GPU_DIR = ${HOME}/repos/GPU-FEM-Project
+GPU_MACRO_INCLUDE=-I${GPU_DIR}
+
+BENCHMARK_LINK=-lbenchmark
+
+CXX_STD := -std=c++17
 
 # GPU compile
-GPU := true
+GPU := false
 GPU_CXX := nvcc
 GPU_CC_FLAGS :=
 MPI_INC =
@@ -34,30 +32,49 @@ ifeq ($(GPU), true)
     MPI_LIB := $(shell ${CXX} -showme:libdirs | sed 's|[^ ]*|-L&|g') -lmpi
     CUDA_LIBS := -L/usr/local/cuda/lib64 -lcudart
 
-    CXX := $(GPU_CXX)
     # temporarily suppressing warnings with -w
-    GPU_CC_FLAGS := -w -x cu -Xcompiler
+    GPU_CC_FLAGS := ${CXX_STD} -w -x cu -Xcompiler
     # optional sometimes need to downgrade gcc under the hood compiler
-    # GPU_CC_FLAGS := --compiler-bindir=/usr/bin/gcc-10 -std=c++17 -x cu -Xcompiler
+    # GPU_CC_FLAGS := --compiler-bindir=/usr/bin/gcc-10 ${CXX_STD} -x cu -Xcompiler
 endif
 
-# Set the command line flags to use for compilation
-TACS_OPT_CC_FLAGS = ${TACS_DEF} ${EXTRA_CC_FLAGS} ${METIS_INCLUDE} ${AMD_INCLUDE} ${TECIO_INCLUDE} ${TACS_INCLUDE}
-TACS_DEBUG_CC_FLAGS = ${TACS_DEF} ${EXTRA_DEBUG_CC_FLAGS} ${METIS_INCLUDE} ${AMD_INCLUDE} ${TECIO_INCLUDE} ${TACS_INCLUDE}
+# Set up for parallel make
+MAKE = make -j 8
 
-# By default, use the optimized flags
-TACS_CC_FLAGS = ${TACS_OPT_CC_FLAGS}
+# Flags for debugging and regular compilation versions (non GPU)
+EXTRA_DEBUG_CC_FLAGS = ${CXX_STD} -fPIC -g
+EXTRA_CC_FLAGS = ${CXX_STD} -fPIC ${OPT_FLAGS}
 
-# Set the linking flags to use
-TACS_EXTERN_LIBS = ${AMD_LIBS} ${METIS_LIB} ${LAPACK_LIBS} ${TECIO_LIBS}
-TACS_LD_FLAGS = ${EXTRA_LD_FLAGS} ${TACS_LD_CMD} ${TACS_EXTERN_LIBS}
+# Set the ar flags
+AR_FLAGS = rcs
 
-# declare location of this directory for the GPU Macros
-GPU_DIR = ${HOME}/repos/GPU-FEM-Project
-GPU_MACRO_INCLUDE=-I${GPU_DIR}
+# Flags for debugging and regular compilation versions
+EXTRA_DEBUG_CC_FLAGS = -fPIC -g
+EXTRA_CC_FLAGS = -fPIC -O3
 
-include $(TACS_DIR)/Makefile.in
-include $(TACS_DIR)/TACS_Common.mk
-TACS_FLAGS = ${TACS_DEF} ${METIS_INCLUDE} ${AMD_INCLUDE} ${TECIO_INCLUDE} ${TACS_INCLUDE}
+# Defines whether to use static or dynamic linking
+# TACS_LD_CMD=${TACS_DIR}/lib/libtacs.a
+TACS_LD_CMD=-L${TACS_DIR}/lib/ -Wl,-rpath,${TACS_DIR}/lib -ltacs
 
-BENCHMARK_LINK=-lbenchmark
+ifeq ($(GPU), true)
+    GPU_TACS_LD_CMD := -L${TACS_DIR}/lib/ -Xlinker -rpath -Xlinker ${TACS_DIR}/lib -ltacs
+endif
+
+# For linux systems, use the following settings:
+SO_EXT=so
+SO_LINK_FLAGS=-fPIC -shared -qopenmp
+
+# This uses the default installation of LAPACK.
+# Use an optimized version of LAPACK if available.
+# You may also have to include -lblas as well.
+
+MKLPATH=${MKLROOT}/lib/intel64
+MKL_LIBS = -Wl,--start-group ${MKLPATH}/libmkl_intel_lp64.a ${MKLPATH}/libmkl_sequential.a ${MKLPATH}/libmkl_core.a -Wl,--end-group -lpthread
+
+LAPACK_LIBS = -limf ${MKL_LIBS}
+# LAPACK_LIBS = -L/usr/lib/ -llapack -lpthread -lblas
+
+
+METIS_DIR = ${TACS_DIR}/extern/metis
+METIS_INCLUDE = -I${METIS_DIR}/include/
+METIS_LIB = ${TACS_DIR}/extern/metis/lib/libmetis.a
