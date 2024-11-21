@@ -231,13 +231,12 @@ void assemblePlaneStressResidual(const int *const connPtr,
       A2D::MatDet(J, detJ);
 
       // --- Compute state gradient in physical space ---
-      // double dudx[numStates * numDim];
       A2D::Mat<double, numStates, numDim> dudx;
       interpRealGradient(localNodeStates, dNdxi, JInv, dudx);
 
       // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight and
       // detJ)
-      A2D::Mat<double, numDim, numDim> weakRes;
+      A2D::Mat<double, numStates, numDim> weakRes;
       planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeights[quadPtInd] * detJ, weakRes);
 
       // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
