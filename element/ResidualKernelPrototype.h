@@ -2,6 +2,7 @@
 
 #include "GPUMacros.h"
 #include "a2dcore.h"
+#include "adscalar.h"
 
 template <typename T>
 void printMat(const T mat) {
@@ -270,7 +271,8 @@ void assemblePlaneStressJacobian(const int *const connPtr,
                                  const double E,
                                  const double nu,
                                  const double t,
-                                 double *const residual double *matData) {
+                                 double *const residual,
+                                 double *const matData) {
 #pragma omp parallel for
   for (int elementInd = 0; elementInd < numElements; elementInd++) {
     // Get the element nodal states and coordinates
@@ -375,6 +377,11 @@ void assemblePlaneStressJacobian(const int *const connPtr,
     }
     // --- Scatter the local element Jacobian into the global matrix ---
     // TODO: Implement this
+
+    // --- Scatter local residual back to global array---
+    if (residual != nullptr) {
+      scatterResidual<numNodes, numStates>(connPtr, conn, elementInd, localRes, residual);
+    }
   }
 }
 

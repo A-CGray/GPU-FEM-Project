@@ -11,6 +11,7 @@
 // =============================================================================
 // Standard Library Includes
 // =============================================================================
+#include <chrono>
 
 // =============================================================================
 // Extension Includes
@@ -78,9 +79,12 @@ int main(int argc, char *argv[]) {
     // --- Evaluate residual and write to file ---
     // TODO: Why does the ordering of the residual not seem to be affected by the matrix ordering type?
     TACSBVec *res = assembler->createVec();
-    const double tacsResStartTime = 0.0; // omp_get_wtime();
+    auto t1 = std::chrono::high_resolution_clock::now();
     assembler->assembleRes(res);
-    const double tacsResTime = 0.0; // omp_get_wtime() - tacsResStartTime;
+    auto t2 = std::chrono::high_resolution_clock::now();
+    /* Getting number of seconds as a double. */
+    std::chrono::duration<double> tmp = t2 - t1;
+    const double tacsResTime = tmp.count();
     assembler->reorderVec(res);
     if (assembler->isReordered()) {
       printf("Assembler is reordered\n");
@@ -214,7 +218,7 @@ int main(int argc, char *argv[]) {
     cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
 #else
-    const double kernelResStartTime = 0.0; // omp_get_wtime();
+    t1 = std::chrono::high_resolution_clock::now();
 #endif
     // We need a bunch of if statements here because the kernel is templated on the number of nodes, which we only
     // know at runtime
@@ -334,13 +338,18 @@ int main(int argc, char *argv[]) {
     cudaDeviceSynchronize();
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
+    float runTime;
     cudaEventElapsedTime(&runTime, start, stop);
     runTime /= 1000; // Convert to seconds
+    const double kernelResTime = double(runTime);
 
     // Copy the residual back to the CPU
     cudaMemcpy(kernelRes, d_kernelRes, numNodes * 2 * sizeof(double), cudaMemcpyDeviceToHost);
 #else
-    const double kernelResTime = 0.0; // omp_get_wtime() - kernelResStartTime;
+    t2 = std::chrono::high_resolution_clock::now();
+    /* Getting number of seconds as a double. */
+    tmp = t2 - t1;
+    const double kernelResTime = tmp.count();
 #endif
 
     writeArrayToFile<TacsScalar>(kernelRes, resSize, "KernelResidual.csv");
