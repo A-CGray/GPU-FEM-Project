@@ -154,13 +154,13 @@ __DEVICE__ void interpRealGradient(const A2D::Mat<double, numNodes, numVals> nod
   A2D::MatMatMult<A2D::MatOp::NORMAL, A2D::MatOp::NORMAL>(dudxi, JInv, dudx);
 }
 
-template <A2D::GreenStrainType strainType>
-__DEVICE__ void planeStressWeakRes(const A2D::Mat<double, 2, 2> uPrime,
+template <A2D::GreenStrainType strainType, typename numType>
+__DEVICE__ void planeStressWeakRes(const A2D::Mat<numType, 2, 2> uPrime,
                                    const double E,
                                    const double nu,
                                    const double t,
                                    const double scale,
-                                   A2D::Mat<double, 2, 2> &residual) {
+                                   A2D::Mat<numType, 2, 2> &residual) {
   A2D::ADObj<A2D::Mat<double, 2, 2>> uPrimeMat(uPrime);
   A2D::ADObj<A2D::SymMat<double, 2>> strain, stress;
   A2D::ADObj<double> energy;
@@ -171,12 +171,24 @@ __DEVICE__ void planeStressWeakRes(const A2D::Mat<double, 2, 2> uPrime,
   const double mu = 0.5 * E / (1.0 + nu);
   const double lambda = 2 * mu * nu / (1.0 - nu);
 
-  auto stack = A2D::MakeStack(A2D::MatGreenStrain<strainType>(uPrimeMat, strain),
-                              SymIsotropic(mu, lambda, strain, stress),
-                              SymMatMultTrace(strain, stress, energy));
+  // --- A2D stacks don't currently work on the GPU so we'll try reversing through the stack manually ---
+
+  // auto stack = A2D::MakeStack(A2D::MatGreenStrain<strainType>(uPrimeMat, strain),
+  //                             SymIsotropic(mu, lambda, strain, stress),
+  //                             SymMatMultTrace(strain, stress, energy));
+  // stack.reverse();                   // Reverse mode AD through the stack
+
+  auto strainExpr = A2D::MatGreenStrain<strainType>(uPrimeMat, strain);
+  strainExpr.eval();
+  auto stressExpr = SymIsotropic(mu, lambda, strain, stress);
+  stressExpr.eval();
+  auto energyExpr = SymMatMultTrace(strain, stress, energy);
+  energyExpr.eval();
   // Compute strain energy derivative w.r.t state gradient
   energy.bvalue() = 0.5 * scale * t; // Set the seed value (0.5 because energy = 0.5 * sigma : epsilon)
-  stack.reverse();                   // Reverse mode AD through the stack
+  energyExpr.reverse();              // Reverse mode AD through the stack
+  stressExpr.reverse();
+  strainExpr.reverse();
   for (int ii = 0; ii < 4; ii++) {
     residual[ii] = uPrimeMat.bvalue()[ii];
   }
