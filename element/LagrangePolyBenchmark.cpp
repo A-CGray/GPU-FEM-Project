@@ -34,12 +34,15 @@ void lagrangePoly1dOrder1Deriv(const double x, const int nodeInd, double &N, dou
     case 0:
       N = 0.5 * (1 - x);
       dNdx = -0.5;
+      return;
     case 1:
       N = 0.5 * (1 + x);
       dNdx = 0.5;
+      return;
     default:
       N = 0.0;
       dNdx = 0.0;
+      return;
   }
 }
 
@@ -61,15 +64,19 @@ void lagrangePoly1dOrder2Deriv(const double x, const int nodeInd, double &N, dou
     case 0:
       N = -0.5 * x * (1.0 - x);
       dNdx = -0.5 + x;
+      return;
     case 1:
       N = (1.0 - x) * (1.0 + x);
       dNdx = -2 * x;
+      return;
     case 2:
       N = 0.5 * (1.0 + x) * x;
       dNdx = 0.5 + x;
+      return;
     default:
       N = 0.0;
       dNdx = 0.0;
+      return;
   }
 }
 
@@ -93,18 +100,23 @@ void lagrangePoly1dOrder3Deriv(const double x, const int nodeInd, double &N, dou
     case 0:
       N = -(2.0 / 3.0) * (0.5 + x) * (0.5 - x) * (1.0 - x);
       dNdx = -2.0 * x * x + (4.0 / 3.0) * x + 1.0 / 6.0;
+      return;
     case 1:
       N = (4.0 / 3.0) * (1.0 + x) * (0.5 - x) * (1.0 - x);
       dNdx = 4.0 * x * x - (4.0 / 3.0) * x - 4.0 / 3.0;
+      return;
     case 2:
       N = (4.0 / 3.0) * (1.0 + x) * (0.5 + x) * (1.0 - x);
       dNdx = -4.0 * x * x - (4.0 / 3.0) * x + 4.0 / 3.0;
+      return;
     case 3:
       N = -(2.0 / 3.0) * (1.0 + x) * (0.5 + x) * (0.5 - x);
       dNdx = 2.0 * x * x + (4.0 / 3.0) * x - 1.0 / 6.0;
+      return;
     default:
       N = 0.0;
       dNdx = 0.0;
+      return;
   }
 }
 

@@ -5,8 +5,9 @@ A2D_INCLUDE = -I${A2D_DIR}/include
 # declare TACS location
 TACS_DIR = ${HOME}/repos/tacs
 
-CXX = icpc -lmpi
-CXX = g++ -lmpi
+CXX = icpc -lmpi # Intel compiler on NAS (doesn't play nice with A2D currently)
+CXX = g++ -lmpi # gcc on NAS
+CXX := mpicxx # MPI compiler on laptop
 RM = rm -f
 
 # declare location of this directory for the GPU Macros
@@ -71,8 +72,8 @@ SO_LINK_FLAGS=-fPIC -shared -qopenmp
 MKLPATH=${MKLROOT}/lib/intel64
 MKL_LIBS = -Wl,--start-group ${MKLPATH}/libmkl_intel_lp64.a ${MKLPATH}/libmkl_sequential.a ${MKLPATH}/libmkl_core.a -Wl,--end-group -lpthread
 
-LAPACK_LIBS = -limf ${MKL_LIBS}
-# LAPACK_LIBS = -L/usr/lib/ -llapack -lpthread -lblas
+# LAPACK_LIBS = -limf ${MKL_LIBS}
+LAPACK_LIBS = -L/usr/lib/ -llapack -lpthread -lblas
 
 
 METIS_DIR = ${TACS_DIR}/extern/metis
