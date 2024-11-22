@@ -224,10 +224,6 @@ void assemblePlaneStressResidual(const int *const connPtr,
                                                    localNodeStates,
                                                    localNodeCoords);
 
-    for (int ii = 0; ii < numNodes * numStates; ii++) {
-      localRes[ii] = 0.0;
-    }
-
     // Now the main quadrature loop
     for (int quadPtInd = 0; quadPtInd < numQuadPts; quadPtInd++) {
       // Put the quadrature point basis gradients into an A2D mat
@@ -256,6 +252,129 @@ void assemblePlaneStressResidual(const int *const connPtr,
     }
     // --- Scatter local residual back to global array---
     scatterResidual<numNodes, numStates>(connPtr, conn, elementInd, localRes, residual);
+  }
+}
+
+template <int numNodes,
+          int numStates,
+          int numQuadPts,
+          int numDim,
+          A2D::GreenStrainType strainType = A2D::GreenStrainType::LINEAR>
+void assemblePlaneStressJacobian(const int *const connPtr,
+                                 const int *const conn,
+                                 const int numElements,
+                                 const double *const states,
+                                 const double *const nodeCoords,
+                                 const double *const quadPtWeights,
+                                 const double *const quadPointdNdxi,
+                                 const double E,
+                                 const double nu,
+                                 const double t,
+                                 double *const residual double *matData) {
+#pragma omp parallel for
+  for (int elementInd = 0; elementInd < numElements; elementInd++) {
+    // Get the element nodal states and coordinates
+    A2D::Mat<double, numNodes, numStates> localNodeStates;
+    A2D::Mat<double, numNodes, numDim> localNodeCoords;
+    gatherElementData<numNodes, numStates, numDim>(connPtr,
+                                                   conn,
+                                                   elementInd,
+                                                   states,
+                                                   nodeCoords,
+                                                   localNodeStates,
+                                                   localNodeCoords);
+
+    A2D::Mat<double, numNodes, numStates> localRes;
+    const int numDOF = numNodes * numStates;
+    A2D::Mat<double, numDOF, numDOF> localMat;
+
+    // Now the main quadrature loop
+    for (int quadPtInd = 0; quadPtInd < numQuadPts; quadPtInd++) {
+
+      // Put the quadrature point basis gradients into an A2D mat
+      A2D::Mat<double, numNodes, numDim> dNdxi(&quadPointdNdxi[quadPtInd * numNodes * numDim]);
+
+      // Compute Jacobian, J = dx/dxi
+      A2D::Mat<double, numDim, numDim> J, JInv;
+      interpParamGradient<numNodes, numDim, numDim>(localNodeCoords, dNdxi, J);
+
+      // --- Compute J^-1 and detJ ---
+      A2D::MatInv(J, JInv);
+      double detJ;
+      A2D::MatDet(J, detJ);
+
+      // --- Compute state gradient in physical space ---
+      A2D::Mat<double, numStates, numDim> dudx;
+      interpRealGradient(localNodeStates, dNdxi, JInv, dudx);
+
+      // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight and
+      // detJ)
+      A2D::Mat<double, numStates, numDim> weakRes;
+      planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeights[quadPtInd] * detJ, weakRes);
+
+      // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
+      addTransformStateGradSens<numNodes, numStates, numDim>(weakRes, JInv, dNdxi, localRes);
+
+      // We will compute the element Jac one column at a time, essentially doing a forward AD pass through the residual
+      // calculation
+
+      // Create a matrix of AD scalars that will store dudx and it's forward seed
+      A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> dudxFwd;
+      for (int ii = 0; ii < numStates; ii++) {
+        for (int jj = 0; jj < numDim; jj++) {
+          dudxFwd(ii, jj).value = dudx[ii, jj];
+        }
+      }
+      for (int nodeInd = 0; nodeInd < numNodes; nodeInd++) {
+        // Technically we should set a forward seed of 1 in q(nodeInd, stateInd) and 0 in all other entries, then
+        // propogate that seed through the state gradient interpolation, but because we are only seeding a single
+        // nodal state each round, we only need to use the basis function gradient for that node to propogate through
+        // the state gradient calculation
+        for (int stateInd = 0; stateInd < numStates; stateInd++) {
+          // Forward seed of dudxi is a matrix with dNdxi in the row corresponding to this state
+          A2D::Mat<double, numStates, numDim> dudxiDot, dudxDot;
+          for (int ii = 0; ii < numDim; ii++) {
+            dudxiDot[stateInd, ii] = dNdxi(nodeInd, ii);
+          }
+          // Now propogate through dudx = dudxi * J^-1
+          A2D::MatMatMult(dudxiDot, JInv, dudxDot);
+
+          // Now we will do a forward AD pass through the weak residual calculation by setting dudxDot as the seed in
+          // the state gradient
+          for (int ii = 0; ii < numStates; ii++) {
+            for (int jj = 0; jj < numDim; jj++) {
+              dudxFwd(ii, jj).deriv[0] = dudxDot[ii, jj];
+            }
+          }
+          A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> weakResFwd;
+          planeStressWeakRes<strainType>(dudxFwd, E, nu, t, quadPtWeights[quadPtInd] * detJ, weakResFwd);
+
+          // Put the forward seed of the weak residual into it's own matrix
+          A2D::Mat<double, numStates, numDim> weakResDot;
+          for (int ii = 0; ii < numStates; ii++) {
+            for (int jj = 0; jj < numDim; jj++) {
+              weakResDot[ii, jj] = weakResFwd(ii, jj).deriv[0];
+            }
+          }
+
+          // Now propogate through the transformation of the state gradient sensitivity, this gives us this quad point's
+          // contribution to this column of the element jacobian
+          A2D::Mat<double, numNodes, numStates> matColContribution;
+          addTransformStateGradSens<numNodes, numStates, numDim>(weakResDot, JInv, dNdxi, matColContribution);
+
+          // Add this column contribution to the element jacobian
+          const int colInd = nodeInd * numStates + stateInd;
+          for (int ii = 0; ii < numNodes; ii++) {
+            for (int jj = 0; jj < numStates; jj++) {
+              const int rowInd = ii * numStates + jj;
+              localMat(colInd, rowInd) += matColContribution(ii, jj);
+            }
+          }
+        }
+      }
+    }
+    // --- Scatter the local element Jacobian into the global matrix ---
+    // TODO: Implement this
   }
 }
 
