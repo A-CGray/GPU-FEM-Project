@@ -1,3 +1,4 @@
+#include "GPUMacros.h"
 #include "a2dcore.h"
 #include "adscalar.h"
 #include <cstdlib>
@@ -11,17 +12,17 @@ using namespace A2D;
 #define N 3
 
 // __host__ __device__ T randomNum() { return T(std::rand()) / RAND_MAX; }
-__host__ __device__ T randomNum() volatile { return T(0.81763258476152387654); }
+__host__ __device__ T randomNum() { return T(0.81763258476152387654); }
 
 template <typename I, typename numType>
-__host__ __device__ void print_row_major_matrix(const std::string name, I height, I width, numType mat[]) {
-  std::cout << name << ":\n";
+__host__ __device__ void print_row_major_matrix(const char *name, I height, I width, numType mat[]) {
+  printf("%s:\n", name);
   for (I i = 0; i < height; i++) {
-    std::cout << "[ ";
+    printf("[ ");
     for (I j = 0; j < width; j++) {
-      std::cout << std::setw(15) << mat[i * width + j];
+      printf("% .15e ", mat[i * width + j]);
     }
-    std::cout << " ]\n";
+    printf(" ]\n");
   }
 }
 
@@ -105,7 +106,8 @@ __global__ void a2dTestKernel() {
   quadFormStack.reverse();
 
   // Print the results
-  printf("\n\nf(x) = 1/2 * x^T A x + b^T x\ndf/dx = [ ";) for (int ii = 0; ii < N; ii++) {
+  printf("\n\nf(x) = 1/2 * x^T A x + b^T x\ndf/dx = [ ");
+  for (int ii = 0; ii < N; ii++) {
     printf("%f ", xVec.bvalue()[ii]);
   }
   printf("], Reference = [ ");
@@ -123,8 +125,10 @@ __global__ void a2dTestKernel() {
   // Print the results
   print_row_major_matrix("d^2f/dx^2", N, N, Hessian.get_data());
   print_row_major_matrix("A", N, N, A.get_data());
-
-  return 0;
 }
 
-int main(int argc, char *argv[]) { a2dTestKernel<<<1, 1>>>(); }
+int main(int argc, char *argv[]) {
+  printf("Running kernel\n");
+  a2dTestKernel<<<1, 1>>>();
+  gpuErrchk(cudaDeviceSynchronize());
+}

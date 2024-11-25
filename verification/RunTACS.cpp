@@ -170,45 +170,32 @@ int main(int argc, char *argv[]) {
     cudaMalloc(&d_conn, numElements * numNodesPerElement * sizeof(int));
     cudaMemcpy(d_conn, conn, numElements * numNodesPerElement * sizeof(int), cudaMemcpyHostToDevice);
 
-    int *d_numElements;
-    cudaMalloc(&d_numElements, sizeof(int));
-    cudaMemcpy(d_numElements, numElements, sizeof(int), cudaMemcpyHostToDevice);
-
     double *d_disp;
     cudaMalloc(&d_disp, 2 * numNodes * sizeof(double));
-    cudaMemcpy(d_disp, disp, 2 * numNodes * sizeof(double));
+    cudaMemcpy(d_disp, disp, 2 * numNodes * sizeof(double), cudaMemcpyHostToDevice);
 
     double *d_xPts2d;
     cudaMalloc(&d_xPts2d, 2 * numNodes * sizeof(double));
-    cudaMemcpy(d_xPts2d, xPts2d, 2 * numNodes * sizeof(double));
+    cudaMemcpy(d_xPts2d, xPts2d, 2 * numNodes * sizeof(double), cudaMemcpyHostToDevice);
 
     double *d_quadPtWeights;
     cudaMalloc(&d_quadPtWeights, numQuadPts * sizeof(double));
-    cudaMemcpy(d_quadPtWeights, quadPtWeights, numQuadPts * sizeof(double));
+    cudaMemcpy(d_quadPtWeights, quadPtWeights, numQuadPts * sizeof(double), cudaMemcpyHostToDevice);
 
     double *d_quadPointdNdxi;
     cudaMalloc(&d_quadPointdNdxi, numQuadPts * numNodesPerElement * 2 * sizeof(double));
-    cudaMemcpy(d_quadPointdNdxi, quadPointdNdxi, numQuadPts * numNodesPerElement * 2 * sizeof(double));
-
-    double *d_E;
-    cudaMalloc(&d_E, sizeof(double));
-    cudaMemcpy(d_E, &E, sizeof(double));
-
-    double *d_nu;
-    cudaMalloc(&d_nu, sizeof(double));
-    cudaMemcpy(d_nu, &nu, sizeof(double));
-
-    double *d_t;
-    cudaMalloc(&d_t, sizeof(double));
-    cudaMemcpy(d_t, &t, sizeof(double));
+    cudaMemcpy(d_quadPointdNdxi,
+               quadPointdNdxi,
+               numQuadPts * numNodesPerElement * 2 * sizeof(double),
+               cudaMemcpyHostToDevice);
 
     double *d_kernelRes;
     cudaMalloc(&d_kernelRes, numNodes * 2 * sizeof(double));
-    cudaMemcpy(d_kernelRes, kernelRes, numNodes * 2 * sizeof(double));
+    cudaMemcpy(d_kernelRes, kernelRes, numNodes * 2 * sizeof(double), cudaMemcpyHostToDevice);
 
     // Figure out how many blocks and threads to use
-    threadsPerBlock = 4 * 32;
-    numBlocks = (numElements + threadsPerBlock - 1) / threadsPerBlock;
+    const int threadsPerBlock = 4 * 32;
+    const int numBlocks = (numElements + threadsPerBlock - 1) / threadsPerBlock;
 #endif
 
 #ifdef __CUDACC__
@@ -227,14 +214,14 @@ int main(int argc, char *argv[]) {
 #ifdef __CUDACC__
         assemblePlaneStressResidualKernel<4, 2, 4, 2><<<numBlocks, threadsPerBlock>>>(d_connPtr,
                                                                                       d_conn,
-                                                                                      d_numElements,
+                                                                                      numElements,
                                                                                       d_disp,
                                                                                       d_xPts2d,
                                                                                       d_quadPtWeights,
                                                                                       d_quadPointdNdxi,
-                                                                                      d_E,
-                                                                                      d_nu,
-                                                                                      d_t,
+                                                                                      E,
+                                                                                      nu,
+                                                                                      t,
                                                                                       d_kernelRes);
 #else
         assemblePlaneStressResidual<4, 2, 4, 2>(connPtr,
@@ -254,14 +241,14 @@ int main(int argc, char *argv[]) {
 #ifdef __CUDACC__
         assemblePlaneStressResidualKernel<9, 2, 9, 2><<<numBlocks, threadsPerBlock>>>(d_connPtr,
                                                                                       d_conn,
-                                                                                      d_numElements,
+                                                                                      numElements,
                                                                                       d_disp,
                                                                                       d_xPts2d,
                                                                                       d_quadPtWeights,
                                                                                       d_quadPointdNdxi,
-                                                                                      d_E,
-                                                                                      d_nu,
-                                                                                      d_t,
+                                                                                      E,
+                                                                                      nu,
+                                                                                      t,
                                                                                       d_kernelRes);
 #else
         assemblePlaneStressResidual<9, 2, 9, 2>(connPtr,
@@ -281,14 +268,14 @@ int main(int argc, char *argv[]) {
 #ifdef __CUDACC__
         assemblePlaneStressResidualKernel<16, 2, 16, 2><<<numBlocks, threadsPerBlock>>>(d_connPtr,
                                                                                         d_conn,
-                                                                                        d_numElements,
+                                                                                        numElements,
                                                                                         d_disp,
                                                                                         d_xPts2d,
                                                                                         d_quadPtWeights,
                                                                                         d_quadPointdNdxi,
-                                                                                        d_E,
-                                                                                        d_nu,
-                                                                                        d_t,
+                                                                                        E,
+                                                                                        nu,
+                                                                                        t,
                                                                                         d_kernelRes);
 #else
         assemblePlaneStressResidual<16, 2, 16, 2>(connPtr,
@@ -308,14 +295,14 @@ int main(int argc, char *argv[]) {
 #ifdef __CUDACC__
         assemblePlaneStressResidualKernel<25, 2, 25, 2><<<numBlocks, threadsPerBlock>>>(d_connPtr,
                                                                                         d_conn,
-                                                                                        d_numElements,
+                                                                                        numElements,
                                                                                         d_disp,
                                                                                         d_xPts2d,
                                                                                         d_quadPtWeights,
                                                                                         d_quadPointdNdxi,
-                                                                                        d_E,
-                                                                                        d_nu,
-                                                                                        d_t,
+                                                                                        E,
+                                                                                        nu,
+                                                                                        t,
                                                                                         d_kernelRes);
 #else
         assemblePlaneStressResidual<25, 2, 25, 2>(connPtr,
@@ -335,7 +322,7 @@ int main(int argc, char *argv[]) {
         break;
     }
 #ifdef __CUDACC__
-    cudaDeviceSynchronize();
+    gpuErrchk(cudaDeviceSynchronize());
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     float runTime;
@@ -381,14 +368,10 @@ int main(int argc, char *argv[]) {
 #ifdef __CUDACC__
     cudaFree(d_connPtr);
     cudaFree(d_conn);
-    cudaFree(d_numElements);
     cudaFree(d_disp);
     cudaFree(d_xPts2d);
     cudaFree(d_quadPtWeights);
     cudaFree(d_quadPointdNdxi);
-    cudaFree(d_E);
-    cudaFree(d_nu);
-    cudaFree(d_t);
     cudaFree(d_kernelRes);
 #endif
   }
