@@ -1,6 +1,6 @@
 include ../Makefile.in
 
-CXX = clang++
+CXX = g++
 CXXFLAGS = -std=c++17 # -Wall -Wextra -pedantic
 CXXOPTFLAGS = -Ofast -march=native -mtune=native
 CXXDEBUGFLAGS = -g
@@ -13,8 +13,12 @@ default: a2d-learning.exe
 debug: CXXFLAGS += $(CXXDEBUGFLAGS)
 debug: a2d-learning.exe
 
+.PHONY: gpu
+gpu:
+	nvcc -std=c++17 -I/home6/achris10/repos/a2d/include  -I/home6/achris10/repos/GPU-FEM-Project  a2d-learning.cu -o a2d-learning.exe
+
 %.exe: %.cpp
-	$(CXX) $(CXXFLAGS) $(A2D_INCLUDE) $< -o $@
+	$(CXX) $(CXXFLAGS) $(A2D_INCLUDE) ${GPU_INCLUDE} $< -o $@
 
 .PHONY: clean
 clean:

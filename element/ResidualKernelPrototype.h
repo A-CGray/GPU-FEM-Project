@@ -324,7 +324,7 @@ void assemblePlaneStressJacobian(const int *const connPtr,
       A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> dudxFwd;
       for (int ii = 0; ii < numStates; ii++) {
         for (int jj = 0; jj < numDim; jj++) {
-          dudxFwd(ii, jj).value = dudx[ii, jj];
+          dudxFwd(ii, jj).value = dudx(ii, jj);
         }
       }
       for (int nodeInd = 0; nodeInd < numNodes; nodeInd++) {
@@ -336,7 +336,7 @@ void assemblePlaneStressJacobian(const int *const connPtr,
           // Forward seed of dudxi is a matrix with dNdxi in the row corresponding to this state
           A2D::Mat<double, numStates, numDim> dudxiDot, dudxDot;
           for (int ii = 0; ii < numDim; ii++) {
-            dudxiDot[stateInd, ii] = dNdxi(nodeInd, ii);
+            dudxiDot(stateInd, ii) = dNdxi(nodeInd, ii);
           }
           // Now propogate through dudx = dudxi * J^-1
           A2D::MatMatMult(dudxiDot, JInv, dudxDot);
@@ -345,7 +345,7 @@ void assemblePlaneStressJacobian(const int *const connPtr,
           // the state gradient
           for (int ii = 0; ii < numStates; ii++) {
             for (int jj = 0; jj < numDim; jj++) {
-              dudxFwd(ii, jj).deriv[0] = dudxDot[ii, jj];
+              dudxFwd(ii, jj).deriv[0] = dudxDot(ii, jj);
             }
           }
           A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> weakResFwd;
@@ -355,7 +355,7 @@ void assemblePlaneStressJacobian(const int *const connPtr,
           A2D::Mat<double, numStates, numDim> weakResDot;
           for (int ii = 0; ii < numStates; ii++) {
             for (int jj = 0; jj < numDim; jj++) {
-              weakResDot[ii, jj] = weakResFwd(ii, jj).deriv[0];
+              weakResDot(ii, jj) = weakResFwd(ii, jj).deriv[0];
             }
           }
 
@@ -406,6 +406,7 @@ __GLOBAL__ void assemblePlaneStressResidualKernel(const int *const connPtr,
   // One element per thread
   const int elementInd = blockIdx.x * blockDim.x + threadIdx.x;
   if (elementInd < numElements) {
+    printf("Running `assemblePlaneStressResidualKernel` element %d\n", elementInd);
     // Get the element nodal states and coordinates
     A2D::Mat<double, numNodes, numStates> localNodeStates;
     A2D::Mat<double, numNodes, numDim> localNodeCoords;

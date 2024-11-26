@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+#PBS -N a2dGPUTest
+#PBS -q v100@pbspl4
+#PBS -l select=1:ncpus=1:ngpus=1:mem=4G:model=sky_gpu
+#PBS -l walltime=0:05:00
+#PBS -o a2dGPUTest_pbs.log
+#PBS -j oe
+#PBS -r n
+#PBS -W group_list=a1607
+
+
+
+module load gcc/10.3 nvhpc-nompi
+
+make clean&&make gpu&&./a2d-learning.exe
+
