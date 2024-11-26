@@ -49,6 +49,8 @@ def meshSurface(
     refine: int = 0,
     smoothingIterations: int = 10,
 ):
+    gmsh.option.setNumber("General.NumThreads", 8)
+
     # Create a uniform sizing field
     def meshSizeCallback(dim, tag, x, y, z, lc):
         return meshSize
