@@ -18,6 +18,9 @@ BENCHMARK_LINK=-lbenchmark
 
 CXX_STD := -std=c++17
 
+# Turn on debug build
+DEBUG := true
+
 # GPU compile
 GPU := false
 GPU_CXX := nvcc -lmpi
@@ -34,6 +37,7 @@ CUDA_LIBS := -L/usr/local/cuda/lib64 -lcudart
 
 # temporarily suppressing warnings with -w
 GPU_CC_FLAGS := -lmpi -O3 -lineinfo --use_fast_math -arch=sm_70 -x cu
+GPU_CC_DEBUG_FLAGS := -lmpi -g -lineinfo -arch=sm_70 -x cu
 # optional sometimes need to downgrade gcc under the hood compiler
 # GPU_CC_FLAGS := --compiler-bindir=/usr/bin/gcc-10 -x cu
 
@@ -42,7 +46,7 @@ MAKE = make -j 8
 
 # Flags for debugging and regular compilation versions (non GPU)
 EXTRA_DEBUG_CC_FLAGS = -fPIC -g
-EXTRA_CC_FLAGS = -fPIC -Ofast -march=core-avx2 -mtune=core-avx2
+EXTRA_CC_FLAGS = -DNDEBUG -fPIC -Ofast -march=core-avx2 -mtune=core-avx2
 
 # Set the ar flags
 AR_FLAGS = rcs
@@ -64,12 +68,13 @@ SO_LINK_FLAGS=-fPIC -shared -qopenmp
 MKLPATH=${MKLROOT}/lib/intel64
 MKL_LIBS = -Wl,--start-group ${MKLPATH}/libmkl_intel_lp64.a ${MKLPATH}/libmkl_sequential.a ${MKLPATH}/libmkl_core.a -Wl,--end-group -lpthread
 
+# nvcc does not support --start-group and --end-group, I think it uses them internally
 ifeq ($(GPU), true)
     MKL_LIBS = -L${MKLPATH}/libmkl_intel_lp64.a -L${MKLPATH}/libmkl_sequential.a -L${MKLPATH}/libmkl_core.a -lpthread
 endif
 
-LAPACK_LIBS = -limf ${MKL_LIBS}
-# LAPACK_LIBS = -L/usr/lib/ -llapack -lpthread -lblas
+# LAPACK_LIBS = -limf ${MKL_LIBS}
+LAPACK_LIBS = -L/usr/lib/ -llapack -lpthread -lblas
 
 
 METIS_DIR = ${TACS_DIR}/extern/metis

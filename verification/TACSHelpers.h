@@ -138,14 +138,14 @@ void generateElementBCSRMap(const int *const connPtr,
                             const int numElements,
                             const int numNodesPerElement,
                             const BCSRMatData *const matData,
-                            int **bcsrMap) {
+                            int **&bcsrMap) {
   // Allocate memory (I know doing this inside a function is a bad idea but it'll do for now)
   bcsrMap = new int *[numElements];
   for (int ii = 0; ii < numElements; ii++) {
     bcsrMap[ii] = new int[numNodesPerElement * numNodesPerElement];
   }
 
-  const int blockLength = matData->bsize;
+  const int blockLength = matData->bsize * matData->bsize;
 
   // Build the map
   for (int ii = 0; ii < numElements; ii++) {
@@ -165,6 +165,11 @@ void generateElementBCSRMap(const int *const connPtr,
           if (matData->cols[jj] == blockColInd) {
             foundCol = true;
             bcsrMap[ii][iNode * numNodesPerElement + jNode] = jj * blockLength;
+            printf("Block associated with node i = %d, node j = %d in element %d starts at index %d in BCSR data\n",
+                   iNode,
+                   jNode,
+                   ii,
+                   jj * blockLength);
             break;
           }
         }

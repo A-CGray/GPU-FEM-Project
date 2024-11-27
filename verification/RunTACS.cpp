@@ -26,7 +26,7 @@
 // =============================================================================
 // Global constant definitions
 // =============================================================================
-const int MAX_TIMING_LOOPS = 100;
+const int MAX_TIMING_LOOPS = 1;
 const double MAX_TIME = 30;
 
 // =============================================================================
@@ -81,6 +81,7 @@ int main(int argc, char *argv[]) {
     printf("nCols: %d\n", jacData->ncols);
     printf("Block size: %d\n", jacData->bsize);
     writeBCSRMatToFile(jacData, "TACSJacobian.mtx");
+    mat->zeroEntries();
 
     int **elementBCSRMap;
     generateElementBCSRMap(connPtr, conn, numElements, numNodesPerElement, jacData, elementBCSRMap);

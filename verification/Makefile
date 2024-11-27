@@ -2,6 +2,10 @@ include ../Makefile.in
 include ../common.mk
 
 CXXFLAGS = $(TACS_OPT_CC_FLAGS)
+ifeq ($(DEBUG), true)
+	CXXFLAGS := $(TACS_DEBUG_CC_FLAGS)
+	GPU_CC_FLAGS := ${GPU_CC_DEBUG_FLAGS}
+endif
 
 obj = TACSHelpers.o
 exe = RunTACS.exe

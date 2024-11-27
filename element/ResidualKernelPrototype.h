@@ -61,6 +61,9 @@ __DEVICE__ void scatterMat(const int *const connPtr,
                            const int *const map,
                            A2D::Mat<double, numNodes * numStates, numNodes * numStates> localMat,
                            double *const matEntries) {
+#ifndef NDEBUG
+  printf("\nScattering matrix for element %d\n", elementInd);
+#endif
   const int blockSize = numStates * numStates;
   const int numDOF = numNodes * numStates;
   for (int iNode = 0; iNode < numNodes; iNode++) {
@@ -68,12 +71,24 @@ __DEVICE__ void scatterMat(const int *const connPtr,
       // We use the map to get the index in the BCSR data array that the local matrix block coupling nodes i and j
       // should be added to. Each block is numStates x numStates
       double *const globalMatBlock = &matEntries[map[iNode * numNodes + jNode]];
+#ifndef NDEBUG
+      printf("Block for node i = %d, node j = %d starts at A[%d]\n", iNode, jNode, map[iNode * numNodes + jNode]);
+#endif
       for (int ii = 0; ii < numStates; ii++) {
-        const int localMatRow = iNode * numStates * numDOF + ii;
+        const int localMatRow = iNode * numStates + ii;
         for (int jj = 0; jj < numStates; jj++) {
-          const int localMatCol = jNode * numStates * numDOF + jj;
+          const int localMatCol = jNode * numStates + jj;
           const int localMatInd = localMatRow * numDOF + localMatCol;
           const int globalMatBlockInd = ii * numStates + jj;
+#ifndef NDEBUG
+          printf("Adding localMat[%d, %d] = %f to globalMatBlock[%d, %d]\n",
+                 localMatRow,
+                 localMatCol,
+                 localMat[localMatInd],
+                 ii,
+                 jj);
+#endif
+
 #ifdef __CUDACC__
           atomicAdd(&globalMatBlock[globalMatBlockInd], localMat[localMatInd]);
 #else
