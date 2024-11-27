@@ -33,11 +33,12 @@ from generateSquareMesh import generateSquareMesh
 # - Third order mesh has roughly 9N DOF
 # - Fourth order mesh has roughly 16N DOF
 elemOrderFactor = [1, 4, 9, 16]
+refineDOFFactor = 4 # Each round of refinement tends to increase the number of DOF by a factor of 4
 
 # Assume that for larger DOF counts, the number of DOF scales with 1/(element size^2)
-squareCoeff = 2.317608  # NDOF = elemOrderFactor * squareCoeff * 1/(meshSize^2)
-LBracketCoeff = 1.5047119999999998  # NDOF = elemOrderFactor * LBracketCoeff * 1/(meshSize^2)
-annulusCoef = 4.707312  # NDOF = elemOrderFactor * annulusCoef * 1/(meshSize^2)
+squareCoeff = 2.7456 # NDOF = elemOrderFactor * squareCoeff * 1/(meshSize^2)
+LBracketCoeff = 1.79  # NDOF = elemOrderFactor * LBracketCoeff * 1/(meshSize^2)
+annulusCoef = 5.3025  # NDOF = elemOrderFactor * annulusCoef * 1/(meshSize^2)
 
 targetDOF = [10**ii for ii in range(3, 8)]
 
@@ -46,11 +47,21 @@ meshData["Square"] = {"func": generateSquareMesh, "coeff": squareCoeff}
 meshData["LBracket"] = {"func": generateLBracketMesh, "coeff": LBracketCoeff}
 meshData["Annulus"] = {"func": generateAnnularMesh, "coeff": annulusCoef}
 
-for order in range(1, 5):
-    for DOF in targetDOF:
+for DOF in targetDOF:
+    for order in range(1, 5):
         for name, data in meshData.items():
             meshFunc = data["func"]
             coeff = data["coeff"]
-            meshSize = (elemOrderFactor[order - 1] * coeff / DOF) ** 0.5
-            print(f"For {name} geometry, {DOF} DOF, order {order} mesh, using mesh size {meshSize}")
-            meshFunc(meshSize=meshSize, order=order, visualise=False)
+            numRefinements = 0
+            refineFactor = 1
+            meshSize = 0.
+
+            maxRefinements = 10
+            for _ in range(maxRefinements):
+                meshSize = (elemOrderFactor[order - 1] * coeff / (DOF/refineFactor)) ** 0.5
+                if meshSize > 0.01:
+                    break
+                refineFactor *= refineDOFFactor
+                numRefinements += 1
+            print(f"\nFor {name} geometry, {DOF} DOF, order {order} mesh, using mesh size {meshSize} with {numRefinements} refinements")
+            meshFunc(meshSize=meshSize, order=order, refine=numRefinements, smoothingIterations=0)

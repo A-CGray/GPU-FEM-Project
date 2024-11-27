@@ -78,7 +78,8 @@ def meshSurface(
     # in Engineering, 94, pp. 494-512, 2013. Uncomment the following line to try
     # the Frontal-Delaunay algorithms for quads:
     #
-    # gmsh.option.setNumber("Mesh.Algorithm", 8)
+    # 1: MeshAdapt, 2: Automatic, 3: Initial mesh only, 5: Delaunay, 6: Frontal-Delaunay, 7: BAMG, 8: Frontal-Delaunay for Quads, 9: Packing of Parallelograms, 11: Quasi-structured Quad
+    gmsh.option.setNumber("Mesh.Algorithm", 1)
 
     # The default recombination algorithm might leave some triangles in the mesh, if
     # recombining all the triangles leads to badly shaped quads. In such cases, to
@@ -88,7 +89,8 @@ def meshSurface(
     # followed by recombination, smoothing and subdivision. Uncomment the following
     # line to try the full-quad algorithm:
     #
-    gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 3)  # or 3
+    # 0: simple, 1: blossom, 2: simple full-quad, 3: blossom full-quad
+    gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 2)  # or 3
 
     # You can also set the subdivision step alone, with
     #
