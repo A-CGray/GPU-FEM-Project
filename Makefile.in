@@ -19,7 +19,7 @@ BENCHMARK_LINK=-lbenchmark
 CXX_STD := -std=c++17
 
 # GPU compile
-GPU := true
+GPU := false
 GPU_CXX := nvcc -lmpi
 GPU_CC_FLAGS :=
 MPI_INC =
@@ -33,7 +33,7 @@ CUDA_LIBS :=
 CUDA_LIBS := -L/usr/local/cuda/lib64 -lcudart
 
 # temporarily suppressing warnings with -w
-GPU_CC_FLAGS := -lmpi -O3 --use_fast_math -arch=sm_70 -x cu
+GPU_CC_FLAGS := -lmpi -O3 -lineinfo --use_fast_math -arch=sm_70 -x cu
 # optional sometimes need to downgrade gcc under the hood compiler
 # GPU_CC_FLAGS := --compiler-bindir=/usr/bin/gcc-10 -x cu
 
