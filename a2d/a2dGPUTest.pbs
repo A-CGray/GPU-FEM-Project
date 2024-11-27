@@ -13,4 +13,3 @@
 module load gcc/10.3 nvhpc-nompi
 
 make clean&&make gpu&&./a2d-learning.exe
-

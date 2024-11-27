@@ -165,11 +165,13 @@ void generateElementBCSRMap(const int *const connPtr,
           if (matData->cols[jj] == blockColInd) {
             foundCol = true;
             bcsrMap[ii][iNode * numNodesPerElement + jNode] = jj * blockLength;
+#ifndef NDEBUG
             printf("Block associated with node i = %d, node j = %d in element %d starts at index %d in BCSR data\n",
                    iNode,
                    jNode,
                    ii,
                    jj * blockLength);
+#endif
             break;
           }
         }
@@ -245,33 +247,71 @@ void writeArrayToFile(const T array[], const int n, const char *filename) {
   }
 }
 
-void writeBCSRMatToFile(BCSRMatData *const matData, const char *filename) {
+void writeBCSRMatToFile(BCSRMatData *const matData,
+                        const char *filename,
+                        const int maxRows = -1,
+                        const int maxCols = -1) {
   FILE *fp = fopen(filename, "w");
   if (fp) {
-    const int nrows = matData->nrows;
-    const int ncols = matData->ncols;
+    int nrows = matData->nrows;
+    int ncols = matData->ncols;
     const int bsize = matData->bsize;
     const int *rowp = matData->rowp;
     const int *cols = matData->cols;
     const double *A = matData->A;
     const int numBlocks = rowp[nrows];
-    const int nnz = numBlocks * bsize * bsize;
+    const int bsize2 = bsize * bsize;
+    int nnz = numBlocks * bsize2;
+
+    // Possibly limit the number of rows and columns to write
+    bool recomputeNNZ = false;
+    if (maxRows > 0) {
+      nrows = std::min(maxRows, nrows);
+      recomputeNNZ = true;
+    }
+    if (maxCols > 0) {
+      ncols = std::min(maxCols, ncols);
+      recomputeNNZ = true;
+    }
+
+    // If we've limited the number of rows or columns, we need to recompute the number of non-zero blocks
+    if (recomputeNNZ) {
+      nnz = 0;
+      for (int ii = 0; ii < nrows; ii++) {
+        const int rowStart = rowp[ii];
+        const int rowEnd = rowp[ii + 1];
+        for (int jj = rowStart; jj < rowEnd; jj++) {
+          if (cols[jj] < ncols) {
+            nnz += bsize2;
+          }
+          else {
+            break;
+          }
+        }
+      }
+    }
+
     fprintf(fp, "%d %d %d\n", nrows * bsize, ncols * bsize, nnz);
 
-    // For each block row
+    // For each block row (up to the max number of rows)
     for (int ii = 0; ii < nrows; ii++) {
       const int rowStart = rowp[ii];
       const int rowEnd = rowp[ii + 1];
-      // For each block in that row
+      // For each block in that row (up to the max number of columns)
       for (int jj = rowStart; jj < rowEnd; jj++) {
-        const TacsScalar *const block = &A[bsize * bsize * jj];
-        // For each row and col in the block
-        for (int kk = 0; kk < bsize; kk++) {
-          const int globalRow = ii * bsize + kk;
-          for (int ll = 0; ll < bsize; ll++) {
-            const int globalCol = cols[jj] * bsize + ll;
-            fprintf(fp, "%d %d % .17g\n", globalRow, globalCol, block[bsize * kk + ll]);
+        if (cols[jj] < ncols) {
+          const TacsScalar *const block = &A[bsize * bsize * jj];
+          // For each row and col in the block
+          for (int kk = 0; kk < bsize; kk++) {
+            const int globalRow = ii * bsize + kk;
+            for (int ll = 0; ll < bsize; ll++) {
+              const int globalCol = cols[jj] * bsize + ll;
+              fprintf(fp, "%d %d % .17g\n", globalRow, globalCol, block[bsize * kk + ll]);
+            }
           }
+        }
+        else {
+          break;
         }
       }
     }

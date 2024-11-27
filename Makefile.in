@@ -19,7 +19,7 @@ BENCHMARK_LINK=-lbenchmark
 CXX_STD := -std=c++17
 
 # Turn on debug build
-DEBUG := true
+DEBUG := false
 
 # GPU compile
 GPU := false

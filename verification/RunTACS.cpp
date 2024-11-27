@@ -26,8 +26,38 @@
 // =============================================================================
 // Global constant definitions
 // =============================================================================
-const int MAX_TIMING_LOOPS = 1;
+const int MAX_TIMING_LOOPS = 100;
 const double MAX_TIME = 30;
+const int JAC_WRITE_SIZE_LIMIT = 1000 / 2;
+const int RES_WRITE_SIZE_LIMIT = 1000;
+
+// ==============================================================================
+// Helper functions
+// ==============================================================================
+void computeTimingStats(const double runTimes[], const int numLoopsRun) {
+
+  double minTime = runTimes[0];
+  double maxTime = runTimes[0];
+  double avgTime = runTimes[0];
+  for (int ii = 1; ii < numLoopsRun; ii++) {
+    minTime = std::min(minTime, runTimes[ii]);
+    maxTime = std::max(maxTime, runTimes[ii]);
+    avgTime += runTimes[ii];
+  }
+  avgTime /= numLoopsRun;
+  double stdDevTime = 0;
+  for (int ii = 0; ii < numLoopsRun; ii++) {
+    stdDevTime += (runTimes[ii] - avgTime) * (runTimes[ii] - avgTime);
+  }
+  stdDevTime = sqrt(stdDevTime / numLoopsRun);
+
+  // Print out the time taken for each part of the computation
+  printf("Timing statistics over %d runs:\n", numLoopsRun);
+  printf("    Min = %.11e\n", minTime);
+  printf("    Max = %.11e\n", maxTime);
+  printf("    Avg = %.11e\n", avgTime);
+  printf("Std Dev = %.11e\n", stdDevTime);
+}
 
 // =============================================================================
 // Main
@@ -70,7 +100,7 @@ int main(int argc, char *argv[]) {
     setAnalyticDisplacements(assembler, displacementField);
     writeTACSSolution(assembler, "output.f5");
 
-    // --- Evaluate Jacobian and residual and write them to file ---
+    // --- Evaluate Jacobian and write out up to 1000 rows ---
     TACSSchurMat *mat = assembler->createSchurMat(nodeOrdering);
     assembler->assembleJacobian(1.0, 0.0, 0.0, NULL, mat);
     BCSRMat *jac;
@@ -80,7 +110,8 @@ int main(int argc, char *argv[]) {
     printf("nRows: %d\n", jacData->nrows);
     printf("nCols: %d\n", jacData->ncols);
     printf("Block size: %d\n", jacData->bsize);
-    writeBCSRMatToFile(jacData, "TACSJacobian.mtx");
+
+    writeBCSRMatToFile(jacData, "TACSJacobian.mtx", JAC_WRITE_SIZE_LIMIT, JAC_WRITE_SIZE_LIMIT);
     mat->zeroEntries();
 
     int **elementBCSRMap;
@@ -108,15 +139,15 @@ int main(int argc, char *argv[]) {
     res->getArray(&tacsResArray);
     int resSize;
     res->getSize(&resSize);
-    writeArrayToFile<TacsScalar>(tacsResArray, resSize, "TACSResidual.csv");
+    // --- Write out the first 1000 entries of the residual ---
+    writeArrayToFile<TacsScalar>(tacsResArray, std::min(resSize, RES_WRITE_SIZE_LIMIT), "TACSResidual.csv");
 
     // --- Get the data required for the kernel ---
-    // number of nodes & elements
+    // Material properties
     // Node coordinates and states
     // Element Connectivity
     // Integration point weights
     // Basis function gradients at the integration points
-    // Material properties
 
     // Get the material properties
     TacsScalar E, nu, t;
@@ -200,7 +231,7 @@ int main(int argc, char *argv[]) {
     // ==============================================================================
     // Run timing loop
     // ==============================================================================
-    double runTimes[MAX_TIMING_LOOPS];
+    double residualRunTimes[MAX_TIMING_LOOPS], jacobianRunTimes[MAX_TIMING_LOOPS];
     int numLoopsRun = 0;
 
     auto timingLoopStart = std::chrono::high_resolution_clock::now();
@@ -208,37 +239,57 @@ int main(int argc, char *argv[]) {
 
 #ifdef __CUDACC__
       cudaMemset(d_kernelRes, 0, numNodes * 2 * sizeof(double));
-      runTimes[numLoopsRun] = runResidualKernel(numNodesPerElement,
-                                                d_connPtr,
-                                                d_conn,
-                                                numElements,
-                                                d_disp,
-                                                d_xPts2d,
-                                                d_quadPtWeights,
-                                                d_quadPointdNdxi,
-                                                E,
-                                                nu,
-                                                t,
-                                                d_kernelRes);
+      residualRunTimes[numLoopsRun] = runResidualKernel(numNodesPerElement,
+                                                        d_connPtr,
+                                                        d_conn,
+                                                        numElements,
+                                                        d_disp,
+                                                        d_xPts2d,
+                                                        d_quadPtWeights,
+                                                        d_quadPointdNdxi,
+                                                        E,
+                                                        nu,
+                                                        t,
+                                                        d_kernelRes);
 #else
       memset(kernelRes, 0, numNodes * 2 * sizeof(double));
-      runTimes[numLoopsRun] = runResidualKernel(numNodesPerElement,
-                                                connPtr,
-                                                conn,
-                                                numElements,
-                                                disp,
-                                                xPts2d,
-                                                quadPtWeights,
-                                                quadPointdNdxi,
-                                                E,
-                                                nu,
-                                                t,
-                                                kernelRes);
+      residualRunTimes[numLoopsRun] = runResidualKernel(numNodesPerElement,
+                                                        connPtr,
+                                                        conn,
+                                                        numElements,
+                                                        disp,
+                                                        xPts2d,
+                                                        quadPtWeights,
+                                                        quadPointdNdxi,
+                                                        E,
+                                                        nu,
+                                                        t,
+                                                        kernelRes);
+
+      mat->zeroEntries();
+      jacobianRunTimes[numLoopsRun] = runJacobianKernel(numNodesPerElement,
+                                                        connPtr,
+                                                        conn,
+                                                        numElements,
+                                                        disp,
+                                                        xPts2d,
+                                                        quadPtWeights,
+                                                        quadPointdNdxi,
+                                                        E,
+                                                        nu,
+                                                        t,
+                                                        elementBCSRMap,
+                                                        nullptr,
+                                                        jacData->A);
 #endif
       numLoopsRun++;
       std::chrono::duration<double> tmp = std::chrono::high_resolution_clock::now() - timingLoopStart;
       const double totalRunTime = tmp.count();
-      printf("Timing run %4d: %.11e s, total time: %f\n", numLoopsRun, runTimes[numLoopsRun - 1], totalRunTime);
+      printf("Timing run %4d: res time = %.11e s, jac time = %.11e, total time = %f\n",
+             numLoopsRun,
+             residualRunTimes[numLoopsRun - 1],
+             jacobianRunTimes[numLoopsRun - 1],
+             totalRunTime);
       if (totalRunTime > MAX_TIME) {
         break;
       }
@@ -249,26 +300,13 @@ int main(int argc, char *argv[]) {
     cudaMemcpy(kernelRes, d_kernelRes, numNodes * 2 * sizeof(double), cudaMemcpyDeviceToHost);
 #endif
 
-    // ==============================================================================
-    // Jacobian kernel test
-    // ==============================================================================
-    assemblePlaneStressJacobian<4, 2, 4, 2>(connPtr,
-                                            conn,
-                                            numElements,
-                                            disp,
-                                            xPts2d,
-                                            quadPtWeights,
-                                            quadPointdNdxi,
-                                            E,
-                                            nu,
-                                            t,
-                                            elementBCSRMap,
-                                            kernelRes,
-                                            jacData->A);
-    writeArrayToFile<TacsScalar>(kernelRes, resSize, "KernelResidual.csv");
-    writeBCSRMatToFile(jacData, "KernelJacobian.mtx");
+    // --- Write out the first 1000 entries of the residual ---
+    writeArrayToFile<TacsScalar>(kernelRes, std::min(resSize, RES_WRITE_SIZE_LIMIT), "KernelResidual.csv");
 
-    // Compute the error
+    // --- Write out the stiffness matrix if this model has <1000 DOF ---
+    writeBCSRMatToFile(jacData, "KernelJacobian.mtx", JAC_WRITE_SIZE_LIMIT, JAC_WRITE_SIZE_LIMIT);
+
+    // Compute the error in the residual
     int maxAbsErrInd, maxRelErrorInd;
     double maxAbsError = TacsGetMaxError(kernelRes, tacsResArray, resSize, &maxAbsErrInd);
     double maxRelError = TacsGetMaxRelError(kernelRes, tacsResArray, resSize, &maxRelErrorInd);
@@ -282,28 +320,12 @@ int main(int argc, char *argv[]) {
     printf("Max Err: %10.4e in component %d.\n", maxAbsError, maxAbsErrInd);
     printf("Max REr: %10.4e in component %d.\n", maxRelError, maxRelErrorInd);
 
-    // Compute timing stats for kernel
-    double minTime = runTimes[0];
-    double maxTime = runTimes[0];
-    double avgTime = runTimes[0];
-    for (int ii = 1; ii < numLoopsRun; ii++) {
-      minTime = std::min(minTime, runTimes[ii]);
-      maxTime = std::max(maxTime, runTimes[ii]);
-      avgTime += runTimes[ii];
-    }
-    avgTime /= numLoopsRun;
-    double stdDevTime = 0;
-    for (int ii = 0; ii < numLoopsRun; ii++) {
-      stdDevTime += (runTimes[ii] - avgTime) * (runTimes[ii] - avgTime);
-    }
-    stdDevTime = sqrt(stdDevTime / numLoopsRun);
+    // Compute timing stats for residual and jacobian kernels
+    printf("\n\nResidual kernel timing stats:\n");
+    computeTimingStats(residualRunTimes, numLoopsRun);
 
-    // Print out the time taken for each part of the computation
-    printf("\n\nTiming statistics over %d runs:\n", numLoopsRun);
-    printf("    Min = %.11e\n", minTime);
-    printf("    Max = %.11e\n", maxTime);
-    printf("    Avg = %.11e\n", avgTime);
-    printf("Std Dev = %.11e\n", stdDevTime);
+    printf("\n\nJacobian kernel timing stats:\n");
+    computeTimingStats(jacobianRunTimes, numLoopsRun);
 
     // Free memory
     delete[] quadPtWeights;

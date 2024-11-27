@@ -118,46 +118,51 @@ def fixGmshBDF(fileName):
     # Open the mesh file and a new file with the same name but with "Fixed" appended to the end
     with open(fileName, "r") as f:
         origLines = f.readlines()
-        newLines = []
-        notFinished = True
-        lineNum = 0
-        while notFinished:
-            line = origLines[lineNum]
-            if "CQUAD" in line:
-                # Combine all the lines up to the next "ENDDATA" or "CQUAD4"
-                elementLines = [line]
-                lineNum += 1
-                while "CQUAD" not in origLines[lineNum] and "ENDDATA" not in origLines[lineNum]:
-                    elementLines.append(origLines[lineNum])
-                    lineNum += 1
-                # Combine the lines into a single line then split into a list by splitting whitespace
-                elementLine = " ".join(elementLines)
-                elementLine = elementLine.split()
-                # Remove the weird + symbol terms that gmsh adds
-                elementLine = [term for term in elementLine if "+" not in term]
-                # Figure out which element type we have
-                numNodes = len(elementLine) - 3
-                elementLine[0] = f"CQUAD{numNodes}"
-                # Write the new line(s) to the new file
-                entryCount = 0
-                newLine = ""
-                for term in elementLine:
-                    newLine += f"{term:<8}"
-                    entryCount += 1
-                    if entryCount % 9 == 0:
-                        newLine += "\n" + " " * 8
-                        entryCount += 1
-                newLines.append(newLine)
-
-            else:
-                newLines.append(line)
-                lineNum += 1
-                if "ENDDATA" in line:
-                    notFinished = False
+        newLines = computeNewLines(origLines)
 
     # Now overwrite the original file with the new lines
-    with open(fileName, "w") as g:
+    with open(f"{fileName}", "w") as g:
         for line in newLines:
             if line[-1] != "\n":
                 line += "\n"
             g.write(line)
+
+
+def computeNewLines(origLines):
+    newLines = []
+    notFinished = True
+    lineNum = 0
+    while notFinished:
+        line = origLines[lineNum]
+        if "CQUAD" in line:
+            # Combine all the lines up to the next "ENDDATA" or "CQUAD4"
+            elementLines = [line]
+            lineNum += 1
+            while "CQUAD" not in origLines[lineNum] and "ENDDATA" not in origLines[lineNum]:
+                elementLines.append(origLines[lineNum])
+                lineNum += 1
+            # Combine the lines into a single line then split into a list by splitting whitespace
+            elementLine = " ".join(elementLines)
+            elementLine = elementLine.split()
+            # Remove the weird + symbol terms that gmsh adds
+            elementLine = [term for term in elementLine if "+" not in term]
+            # Figure out which element type we have
+            numNodes = len(elementLine) - 3
+            elementLine[0] = f"CQUAD{numNodes}"
+            # Write the new line(s) to the new file
+            entryCount = 0
+            newLine = ""
+            for term in elementLine:
+                newLine += f"{term}".ljust(8)
+                entryCount += 1
+                if entryCount % 9 == 0:
+                    newLine += "\n" + " " * 8
+                    entryCount += 1
+            newLines.append(newLine)
+
+        else:
+            newLines.append(line)
+            lineNum += 1
+            if "ENDDATA" in line:
+                notFinished = False
+    return newLines

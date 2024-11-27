@@ -34,20 +34,25 @@ if __name__ == "__main__":
     minEntry = min(TACSMat.data.min(), KernelMat.data.min())
     maxEntry = max(abs(maxEntry), abs(minEntry))
 
-    fig, axes = plt.subplots(ncols=3, figsize=(12, 6))
-    pos = axes[0].matshow(TACSMat.toarray(), cmap="coolwarm", vmin=-maxEntry, vmax=maxEntry)
+    fig, axes = plt.subplots(ncols=3, figsize=(18, 5), sharex=True, sharey=True)
+
+    pos = axes[0].matshow(TACSMat.toarray(), cmap="coolwarm", vmin=-maxEntry, vmax=maxEntry, norm="symlog")
     fig.colorbar(pos, ax=axes[0])
     axes[0].set_title("TACS Jacobian")
 
-    pos = axes[1].matshow(KernelMat.toarray(), cmap="coolwarm", vmin=-maxEntry, vmax=maxEntry)
+    pos = axes[1].matshow(KernelMat.toarray(), cmap="coolwarm", vmin=-maxEntry, vmax=maxEntry, norm="symlog")
     fig.colorbar(pos, ax=axes[1])
     axes[1].set_title("Kernel Jacobian")
 
     # Compute the difference between the two matrices
     diff = TACSMat - KernelMat
     maxDiff = max(abs(diff.data.max()), abs(diff.data.min()))
-    pos = axes[2].matshow(TACSMat.toarray()-KernelMat.toarray(), vmin=-maxDiff, vmax=maxDiff, cmap="coolwarm")
+    pos = axes[2].matshow(
+        TACSMat.toarray() - KernelMat.toarray(), vmin=-maxDiff, vmax=maxDiff, cmap="coolwarm", norm="symlog"
+    )
     fig.colorbar(pos, ax=axes[2])
     axes[2].set_title("Difference")
 
-    plt.show()
+    print(f"Max difference: {maxDiff}")
+
+    niceplots.save_figs(fig, "JacComparison", formats=["pdf", "png"])

@@ -531,116 +531,123 @@ double runResidualKernel(const int numNodesPerElement,
 #else
   auto t1 = std::chrono::high_resolution_clock::now();
 #endif
+
+#ifdef __CUDACC__
+#define ASSEMBLE_PLANE_STRESS_RESIDUAL(numNodes)                                                                       \
+  assemblePlaneStressResidualKernel<numNodes, 2, numNodes, 2><<<numBlocks, threadsPerBlock>>>(connPtr,                 \
+                                                                                              conn,                    \
+                                                                                              numElements,             \
+                                                                                              states,                  \
+                                                                                              nodeCoords,              \
+                                                                                              quadPtWeights,           \
+                                                                                              quadPointdNdxi,          \
+                                                                                              E,                       \
+                                                                                              nu,                      \
+                                                                                              t,                       \
+                                                                                              residual);
+#else
+#define ASSEMBLE_PLANE_STRESS_RESIDUAL(numNodes)                                                                       \
+  assemblePlaneStressResidual<numNodes, 2, numNodes, 2>(connPtr,                                                       \
+                                                        conn,                                                          \
+                                                        numElements,                                                   \
+                                                        states,                                                        \
+                                                        nodeCoords,                                                    \
+                                                        quadPtWeights,                                                 \
+                                                        quadPointdNdxi,                                                \
+                                                        E,                                                             \
+                                                        nu,                                                            \
+                                                        t,                                                             \
+                                                        residual);
+#endif
+
+  switch (numNodesPerElement) {
+    case 4:
+      ASSEMBLE_PLANE_STRESS_RESIDUAL(4);
+      break;
+    case 9:
+      ASSEMBLE_PLANE_STRESS_RESIDUAL(9);
+      break;
+    case 16:
+      ASSEMBLE_PLANE_STRESS_RESIDUAL(16);
+      break;
+    case 25:
+      ASSEMBLE_PLANE_STRESS_RESIDUAL(25);
+      break;
+    default:
+      break;
+  }
+#ifdef __CUDACC__
+  gpuErrchk(cudaDeviceSynchronize());
+  cudaEventRecord(stop, 0);
+  cudaEventSynchronize(stop);
+  float runTime;
+  cudaEventElapsedTime(&runTime, start, stop);
+  runTime /= 1000; // Convert to seconds
+  return double(runTime);
+#else
+  auto t2 = std::chrono::high_resolution_clock::now();
+  /* Getting number of seconds as a double. */
+  std::chrono::duration<double> tmp = t2 - t1;
+  return tmp.count();
+#endif
+}
+
+double runJacobianKernel(const int numNodesPerElement,
+                         const int *const connPtr,
+                         const int *const conn,
+                         const int numElements,
+                         const double *const states,
+                         const double *const nodeCoords,
+                         const double *const quadPtWeights,
+                         const double *const quadPointdNdxi,
+                         const double E,
+                         const double nu,
+                         const double t,
+                         int **elementBCSRMap,
+                         double *const residual,
+                         double *const matEntries) {
+#ifdef __CUDACC__
+  // Figure out how many blocks and threads to use
+  const int threadsPerBlock = 4 * 32;
+  const int numBlocks = (numElements + threadsPerBlock - 1) / threadsPerBlock;
+  // --- Create timing events ---
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+  cudaEventRecord(start, 0);
+#else
+  auto t1 = std::chrono::high_resolution_clock::now();
+#endif
+
+// Helper macro so I don't have to write out all these inputs every time
+#define ASSEMBLE_PLANE_STRESS_JACOBIAN(numNodes)                                                                       \
+  assemblePlaneStressJacobian<numNodes, 2, numNodes, 2>(connPtr,                                                       \
+                                                        conn,                                                          \
+                                                        numElements,                                                   \
+                                                        states,                                                        \
+                                                        nodeCoords,                                                    \
+                                                        quadPtWeights,                                                 \
+                                                        quadPointdNdxi,                                                \
+                                                        E,                                                             \
+                                                        nu,                                                            \
+                                                        t,                                                             \
+                                                        elementBCSRMap,                                                \
+                                                        residual,                                                      \
+                                                        matEntries);
   // We need a bunch of if statements here because the kernel is templated on the number of nodes, which we only
   // know at runtime
   switch (numNodesPerElement) {
     case 4:
-#ifdef __CUDACC__
-      assemblePlaneStressResidualKernel<4, 2, 4, 2><<<numBlocks, threadsPerBlock>>>(connPtr,
-                                                                                    conn,
-                                                                                    numElements,
-                                                                                    states,
-                                                                                    nodeCoords,
-                                                                                    quadPtWeights,
-                                                                                    quadPointdNdxi,
-                                                                                    E,
-                                                                                    nu,
-                                                                                    t,
-                                                                                    residual);
-#else
-      assemblePlaneStressResidual<4, 2, 4, 2>(connPtr,
-                                              conn,
-                                              numElements,
-                                              states,
-                                              nodeCoords,
-                                              quadPtWeights,
-                                              quadPointdNdxi,
-                                              E,
-                                              nu,
-                                              t,
-                                              residual);
-#endif
+      ASSEMBLE_PLANE_STRESS_JACOBIAN(4);
       break;
     case 9:
-#ifdef __CUDACC__
-      assemblePlaneStressResidualKernel<9, 2, 9, 2><<<numBlocks, threadsPerBlock>>>(connPtr,
-                                                                                    conn,
-                                                                                    numElements,
-                                                                                    states,
-                                                                                    nodeCoords,
-                                                                                    quadPtWeights,
-                                                                                    quadPointdNdxi,
-                                                                                    E,
-                                                                                    nu,
-                                                                                    t,
-                                                                                    residual);
-#else
-      assemblePlaneStressResidual<9, 2, 9, 2>(connPtr,
-                                              conn,
-                                              numElements,
-                                              states,
-                                              nodeCoords,
-                                              quadPtWeights,
-                                              quadPointdNdxi,
-                                              E,
-                                              nu,
-                                              t,
-                                              residual);
-#endif
+      ASSEMBLE_PLANE_STRESS_JACOBIAN(9);
       break;
     case 16:
-#ifdef __CUDACC__
-      assemblePlaneStressResidualKernel<16, 2, 16, 2><<<numBlocks, threadsPerBlock>>>(connPtr,
-                                                                                      conn,
-                                                                                      numElements,
-                                                                                      states,
-                                                                                      nodeCoords,
-                                                                                      quadPtWeights,
-                                                                                      quadPointdNdxi,
-                                                                                      E,
-                                                                                      nu,
-                                                                                      t,
-                                                                                      residual);
-#else
-      assemblePlaneStressResidual<16, 2, 16, 2>(connPtr,
-                                                conn,
-                                                numElements,
-                                                states,
-                                                nodeCoords,
-                                                quadPtWeights,
-                                                quadPointdNdxi,
-                                                E,
-                                                nu,
-                                                t,
-                                                residual);
-#endif
+      ASSEMBLE_PLANE_STRESS_JACOBIAN(16);
       break;
     case 25:
-#ifdef __CUDACC__
-      assemblePlaneStressResidualKernel<25, 2, 25, 2><<<numBlocks, threadsPerBlock>>>(connPtr,
-                                                                                      conn,
-                                                                                      numElements,
-                                                                                      states,
-                                                                                      nodeCoords,
-                                                                                      quadPtWeights,
-                                                                                      quadPointdNdxi,
-                                                                                      E,
-                                                                                      nu,
-                                                                                      t,
-                                                                                      residual);
-#else
-      assemblePlaneStressResidual<25, 2, 25, 2>(connPtr,
-                                                conn,
-                                                numElements,
-                                                states,
-                                                nodeCoords,
-                                                quadPtWeights,
-                                                quadPointdNdxi,
-                                                E,
-                                                nu,
-                                                t,
-                                                residual);
-#endif
+      ASSEMBLE_PLANE_STRESS_JACOBIAN(25);
       break;
     default:
       break;

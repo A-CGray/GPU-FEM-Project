@@ -13,7 +13,8 @@
 
 # NVidia profiling reports
 *.ncu-rep
-*.nsys-
+*.nsys-*
+*.sqlite
 
 # Mesh files
 *.msh
