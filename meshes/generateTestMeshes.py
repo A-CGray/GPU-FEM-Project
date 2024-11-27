@@ -53,4 +53,10 @@ for order in range(1, 5):
             coeff = data["coeff"]
             meshSize = (elemOrderFactor[order - 1] * coeff / DOF) ** 0.5
             print(f"For {name} geometry, {DOF} DOF, order {order} mesh, using mesh size {meshSize}")
-            meshFunc(meshSize=meshSize, order=order, visualise=False)
+            meshFunc(
+                meshSize=meshSize,
+                order=order,
+                visualise=False,
+                smoothingIterations=0,
+                outputDir="/nobackup/achris10/GPU-FEM-Project/meshes",
+            )

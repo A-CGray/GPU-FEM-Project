@@ -1,0 +1,13 @@
+#!/usr/bin/env zsh
+#PBS -N generateTestMeshes
+#PBS -q devel
+#PBS -l select=1:ncpus=40:mpiprocs=1:model=cas_ait
+#PBS -l walltime=1:00:00
+#PBS -o generateTestMeshes_pbs.log
+#PBS -j oe
+#PBS -r n
+#PBS -W group_list=a1607
+#PBS -m bae
+
+
+python generateTestMeshes.py
