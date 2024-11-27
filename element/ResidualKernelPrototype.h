@@ -53,6 +53,38 @@ __DEVICE__ void scatterResidual(const int *const connPtr,
   }
 }
 
+// TODO: Figure out why this segfaults
+template <int numNodes, int numStates>
+__DEVICE__ void scatterMat(const int *const connPtr,
+                           const int *const conn,
+                           const int elementInd,
+                           const int *const map,
+                           A2D::Mat<double, numNodes * numStates, numNodes * numStates> localMat,
+                           double *const matEntries) {
+  const int blockSize = numStates * numStates;
+  const int numDOF = numNodes * numStates;
+  for (int iNode = 0; iNode < numNodes; iNode++) {
+    for (int jNode = 0; jNode < numNodes; jNode++) {
+      // We use the map to get the index in the BCSR data array that the local matrix block coupling nodes i and j
+      // should be added to. Each block is numStates x numStates
+      double *const globalMatBlock = &matEntries[map[iNode * numNodes + jNode]];
+      for (int ii = 0; ii < numStates; ii++) {
+        const int localMatRow = iNode * numStates * numDOF + ii;
+        for (int jj = 0; jj < numStates; jj++) {
+          const int localMatCol = jNode * numStates * numDOF + jj;
+          const int localMatInd = localMatRow * numDOF + localMatCol;
+          const int globalMatBlockInd = ii * numStates + jj;
+#ifdef __CUDACC__
+          atomicAdd(&globalMatBlock[globalMatBlockInd], localMat[localMatInd]);
+#else
+          globalMatBlock[globalMatBlockInd] += localMat[localMatInd];
+#endif
+        }
+      }
+    }
+  }
+}
+
 template <int numNodes, int numVals, int numDim>
 __DEVICE__ void addTransformStateGradSens(const A2D::Mat<double, numVals, numDim> stateGradSens,
                                           const A2D::Mat<double, numDim, numDim> JInv,
@@ -162,9 +194,9 @@ __DEVICE__ void planeStressWeakRes(const A2D::Mat<numType, 2, 2> uPrime,
                                    const double t,
                                    const double scale,
                                    A2D::Mat<numType, 2, 2> &residual) {
-  A2D::ADObj<A2D::Mat<double, 2, 2>> uPrimeMat(uPrime);
-  A2D::ADObj<A2D::SymMat<double, 2>> strain, stress;
-  A2D::ADObj<double> energy;
+  A2D::ADObj<A2D::Mat<numType, 2, 2>> uPrimeMat(uPrime);
+  A2D::ADObj<A2D::SymMat<numType, 2>> strain, stress;
+  A2D::ADObj<numType> energy;
 
   // NOTE: For 3D elasticity, the stress is: sigma = 2 * mu * epsilon + lambda * tr(epsilon) * I, however, for plane
   // stress we have to use a slightly different form to account for the assumed strain in the out of plane strain
@@ -172,24 +204,27 @@ __DEVICE__ void planeStressWeakRes(const A2D::Mat<numType, 2, 2> uPrime,
   const double mu = 0.5 * E / (1.0 + nu);
   const double lambda = 2 * mu * nu / (1.0 - nu);
 
-  // --- A2D stacks don't currently work on the GPU so we'll try reversing through the stack manually ---
-
   // auto stack = A2D::MakeStack(A2D::MatGreenStrain<strainType>(uPrimeMat, strain),
   //                             SymIsotropic(mu, lambda, strain, stress),
   //                             SymMatMultTrace(strain, stress, energy));
-  // stack.reverse();                   // Reverse mode AD through the stack
 
+  // --- A2D stacks don't currently work on the GPU so we'll try reversing through the stack manually ---
   auto strainExpr = A2D::MatGreenStrain<strainType>(uPrimeMat, strain);
   strainExpr.eval();
   auto stressExpr = SymIsotropic(mu, lambda, strain, stress);
   stressExpr.eval();
   auto energyExpr = SymMatMultTrace(strain, stress, energy);
   energyExpr.eval();
+
   // Compute strain energy derivative w.r.t state gradient
   energy.bvalue() = 0.5 * scale * t; // Set the seed value (0.5 because energy = 0.5 * sigma : epsilon)
-  energyExpr.reverse();              // Reverse mode AD through the stack
+
+  // stack.reverse();                   // Reverse mode AD through the stack
+
+  energyExpr.reverse(); // Manual reverse mode AD through the stack
   stressExpr.reverse();
   strainExpr.reverse();
+
   for (int ii = 0; ii < 4; ii++) {
     residual[ii] = uPrimeMat.bvalue()[ii];
   }
@@ -252,7 +287,7 @@ void assemblePlaneStressResidual(const int *const connPtr,
       addTransformStateGradSens<numNodes, numStates, numDim>(weakRes, JInv, dNdxi, localRes);
     }
     // --- Scatter local residual back to global array---
-    scatterResidual<numNodes, numStates>(connPtr, conn, elementInd, localRes, residual);
+    scatterResidual(connPtr, conn, elementInd, localRes, residual);
   }
 }
 
@@ -271,8 +306,9 @@ void assemblePlaneStressJacobian(const int *const connPtr,
                                  const double E,
                                  const double nu,
                                  const double t,
+                                 int **bcsrMap,
                                  double *const residual,
-                                 double *const matData) {
+                                 double *const matEntries) {
 #pragma omp parallel for
   for (int elementInd = 0; elementInd < numElements; elementInd++) {
     // Get the element nodal states and coordinates
@@ -376,11 +412,11 @@ void assemblePlaneStressJacobian(const int *const connPtr,
       }
     }
     // --- Scatter the local element Jacobian into the global matrix ---
-    // TODO: Implement this
+    scatterMat<numNodes, numStates>(connPtr, conn, elementInd, bcsrMap[elementInd], localMat, matEntries);
 
     // --- Scatter local residual back to global array---
     if (residual != nullptr) {
-      scatterResidual<numNodes, numStates>(connPtr, conn, elementInd, localRes, residual);
+      scatterResidual(connPtr, conn, elementInd, localRes, residual);
     }
   }
 }
@@ -406,7 +442,7 @@ __GLOBAL__ void assemblePlaneStressResidualKernel(const int *const connPtr,
   // One element per thread
   const int elementInd = blockIdx.x * blockDim.x + threadIdx.x;
   if (elementInd < numElements) {
-    printf("Running `assemblePlaneStressResidualKernel` element %d\n", elementInd);
+    // printf("Running `assemblePlaneStressResidualKernel` element %d\n", elementInd);
     // Get the element nodal states and coordinates
     A2D::Mat<double, numNodes, numStates> localNodeStates;
     A2D::Mat<double, numNodes, numDim> localNodeCoords;
@@ -451,7 +487,161 @@ __GLOBAL__ void assemblePlaneStressResidualKernel(const int *const connPtr,
       addTransformStateGradSens<numNodes, numStates, numDim>(weakRes, JInv, dNdxi, localRes);
     }
     // --- Scatter local residual back to global array---
-    scatterResidual<numNodes, numStates>(connPtr, conn, elementInd, localRes, residual);
+    scatterResidual(connPtr, conn, elementInd, localRes, residual);
   }
 }
 #endif
+
+double runResidualKernel(const int numNodesPerElement,
+                         const int *const connPtr,
+                         const int *const conn,
+                         const int numElements,
+                         const double *const states,
+                         const double *const nodeCoords,
+                         const double *const quadPtWeights,
+                         const double *const quadPointdNdxi,
+                         const double E,
+                         const double nu,
+                         const double t,
+                         double *const residual) {
+#ifdef __CUDACC__
+  // Figure out how many blocks and threads to use
+  const int threadsPerBlock = 4 * 32;
+  const int numBlocks = (numElements + threadsPerBlock - 1) / threadsPerBlock;
+  // --- Create timing events ---
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+  cudaEventRecord(start, 0);
+#else
+  auto t1 = std::chrono::high_resolution_clock::now();
+#endif
+  // We need a bunch of if statements here because the kernel is templated on the number of nodes, which we only
+  // know at runtime
+  switch (numNodesPerElement) {
+    case 4:
+#ifdef __CUDACC__
+      assemblePlaneStressResidualKernel<4, 2, 4, 2><<<numBlocks, threadsPerBlock>>>(connPtr,
+                                                                                    conn,
+                                                                                    numElements,
+                                                                                    states,
+                                                                                    nodeCoords,
+                                                                                    quadPtWeights,
+                                                                                    quadPointdNdxi,
+                                                                                    E,
+                                                                                    nu,
+                                                                                    t,
+                                                                                    residual);
+#else
+      assemblePlaneStressResidual<4, 2, 4, 2>(connPtr,
+                                              conn,
+                                              numElements,
+                                              states,
+                                              nodeCoords,
+                                              quadPtWeights,
+                                              quadPointdNdxi,
+                                              E,
+                                              nu,
+                                              t,
+                                              residual);
+#endif
+      break;
+    case 9:
+#ifdef __CUDACC__
+      assemblePlaneStressResidualKernel<9, 2, 9, 2><<<numBlocks, threadsPerBlock>>>(connPtr,
+                                                                                    conn,
+                                                                                    numElements,
+                                                                                    states,
+                                                                                    nodeCoords,
+                                                                                    quadPtWeights,
+                                                                                    quadPointdNdxi,
+                                                                                    E,
+                                                                                    nu,
+                                                                                    t,
+                                                                                    residual);
+#else
+      assemblePlaneStressResidual<9, 2, 9, 2>(connPtr,
+                                              conn,
+                                              numElements,
+                                              states,
+                                              nodeCoords,
+                                              quadPtWeights,
+                                              quadPointdNdxi,
+                                              E,
+                                              nu,
+                                              t,
+                                              residual);
+#endif
+      break;
+    case 16:
+#ifdef __CUDACC__
+      assemblePlaneStressResidualKernel<16, 2, 16, 2><<<numBlocks, threadsPerBlock>>>(connPtr,
+                                                                                      conn,
+                                                                                      numElements,
+                                                                                      states,
+                                                                                      nodeCoords,
+                                                                                      quadPtWeights,
+                                                                                      quadPointdNdxi,
+                                                                                      E,
+                                                                                      nu,
+                                                                                      t,
+                                                                                      residual);
+#else
+      assemblePlaneStressResidual<16, 2, 16, 2>(connPtr,
+                                                conn,
+                                                numElements,
+                                                states,
+                                                nodeCoords,
+                                                quadPtWeights,
+                                                quadPointdNdxi,
+                                                E,
+                                                nu,
+                                                t,
+                                                residual);
+#endif
+      break;
+    case 25:
+#ifdef __CUDACC__
+      assemblePlaneStressResidualKernel<25, 2, 25, 2><<<numBlocks, threadsPerBlock>>>(connPtr,
+                                                                                      conn,
+                                                                                      numElements,
+                                                                                      states,
+                                                                                      nodeCoords,
+                                                                                      quadPtWeights,
+                                                                                      quadPointdNdxi,
+                                                                                      E,
+                                                                                      nu,
+                                                                                      t,
+                                                                                      residual);
+#else
+      assemblePlaneStressResidual<25, 2, 25, 2>(connPtr,
+                                                conn,
+                                                numElements,
+                                                states,
+                                                nodeCoords,
+                                                quadPtWeights,
+                                                quadPointdNdxi,
+                                                E,
+                                                nu,
+                                                t,
+                                                residual);
+#endif
+      break;
+    default:
+      break;
+  }
+#ifdef __CUDACC__
+  gpuErrchk(cudaDeviceSynchronize());
+  cudaEventRecord(stop, 0);
+  cudaEventSynchronize(stop);
+  float runTime;
+  cudaEventElapsedTime(&runTime, start, stop);
+  runTime /= 1000; // Convert to seconds
+  return double(runTime);
+#else
+  auto t2 = std::chrono::high_resolution_clock::now();
+  /* Getting number of seconds as a double. */
+  std::chrono::duration<double> tmp = t2 - t1;
+  return tmp.count();
+#endif
+}

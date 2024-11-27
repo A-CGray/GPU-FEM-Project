@@ -12,6 +12,7 @@
 // Standard Library Includes
 // =============================================================================
 #include <chrono>
+#include <math.h>
 
 // =============================================================================
 // Extension Includes
@@ -25,10 +26,8 @@
 // =============================================================================
 // Global constant definitions
 // =============================================================================
-
-// =============================================================================
-// Function prototypes
-// =============================================================================
+const int MAX_TIMING_LOOPS = 100;
+const double MAX_TIME = 30;
 
 // =============================================================================
 // Main
@@ -59,6 +58,13 @@ int main(int argc, char *argv[]) {
   }
 
   if (assembler) {
+    const int numNodes = assembler->getNumNodes();
+    const int numElements = assembler->getNumElements();
+    const int numQuadPts = element->getNumQuadraturePoints();
+    const int numNodesPerElement = element->getNumNodes();
+    const int *connPtr;
+    const int *conn;
+    assembler->getElementConnectivity(&connPtr, &conn);
 
     // --- Write out solution file with analytic displacement field ---
     setAnalyticDisplacements(assembler, displacementField);
@@ -75,6 +81,9 @@ int main(int argc, char *argv[]) {
     printf("nCols: %d\n", jacData->ncols);
     printf("Block size: %d\n", jacData->bsize);
     writeBCSRMatToFile(jacData, "TACSJacobian.mtx");
+
+    int **elementBCSRMap;
+    generateElementBCSRMap(connPtr, conn, numElements, numNodesPerElement, jacData, elementBCSRMap);
 
     // --- Evaluate residual and write to file ---
     // TODO: Why does the ordering of the residual not seem to be affected by the matrix ordering type?
@@ -107,11 +116,6 @@ int main(int argc, char *argv[]) {
     // Integration point weights
     // Basis function gradients at the integration points
     // Material properties
-    const int numNodes = assembler->getNumNodes();
-    const int numElements = assembler->getNumElements();
-    const int *connPtr;
-    const int *conn;
-    assembler->getElementConnectivity(&connPtr, &conn);
 
     // Get the material properties
     TacsScalar E, nu, t;
@@ -141,8 +145,6 @@ int main(int argc, char *argv[]) {
     dispVec->getArray(&disp);
 
     // Get data about the element
-    const int numQuadPts = element->getNumQuadraturePoints();
-    const int numNodesPerElement = element->getNumNodes();
     double *const quadPtWeights = new double[numQuadPts];
     double *const quadPtN = new double[numQuadPts * numNodesPerElement];
     // quadPointdNdxi is a numQuadPts x numNodesPerElement x 2 array
@@ -192,39 +194,35 @@ int main(int argc, char *argv[]) {
     double *d_kernelRes;
     cudaMalloc(&d_kernelRes, numNodes * 2 * sizeof(double));
     cudaMemcpy(d_kernelRes, kernelRes, numNodes * 2 * sizeof(double), cudaMemcpyHostToDevice);
-
-    // Figure out how many blocks and threads to use
-    const int threadsPerBlock = 4 * 32;
-    const int numBlocks = (numElements + threadsPerBlock - 1) / threadsPerBlock;
 #endif
 
+    // ==============================================================================
+    // Run timing loop
+    // ==============================================================================
+    double runTimes[MAX_TIMING_LOOPS];
+    int numLoopsRun = 0;
+
+    auto timingLoopStart = std::chrono::high_resolution_clock::now();
+    for (int timingRun = 0; timingRun < MAX_TIMING_LOOPS; timingRun++) {
+
 #ifdef __CUDACC__
-    // --- Create timing events ---
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start, 0);
+      cudaMemset(d_kernelRes, 0, numNodes * 2 * sizeof(double));
+      runTimes[numLoopsRun] = runResidualKernel(numNodesPerElement,
+                                                d_connPtr,
+                                                d_conn,
+                                                numElements,
+                                                d_disp,
+                                                d_xPts2d,
+                                                d_quadPtWeights,
+                                                d_quadPointdNdxi,
+                                                E,
+                                                nu,
+                                                t,
+                                                d_kernelRes);
 #else
-    t1 = std::chrono::high_resolution_clock::now();
-#endif
-    // We need a bunch of if statements here because the kernel is templated on the number of nodes, which we only
-    // know at runtime
-    switch (numNodesPerElement) {
-      case 4:
-#ifdef __CUDACC__
-        assemblePlaneStressResidualKernel<4, 2, 4, 2><<<numBlocks, threadsPerBlock>>>(d_connPtr,
-                                                                                      d_conn,
-                                                                                      numElements,
-                                                                                      d_disp,
-                                                                                      d_xPts2d,
-                                                                                      d_quadPtWeights,
-                                                                                      d_quadPointdNdxi,
-                                                                                      E,
-                                                                                      nu,
-                                                                                      t,
-                                                                                      d_kernelRes);
-#else
-        assemblePlaneStressResidual<4, 2, 4, 2>(connPtr,
+      memset(kernelRes, 0, numNodes * 2 * sizeof(double));
+      runTimes[numLoopsRun] = runResidualKernel(numNodesPerElement,
+                                                connPtr,
                                                 conn,
                                                 numElements,
                                                 disp,
@@ -236,110 +234,38 @@ int main(int argc, char *argv[]) {
                                                 t,
                                                 kernelRes);
 #endif
+      numLoopsRun++;
+      std::chrono::duration<double> tmp = std::chrono::high_resolution_clock::now() - timingLoopStart;
+      const double totalRunTime = tmp.count();
+      printf("Timing run %4d: %.11e s, total time: %f\n", numLoopsRun, runTimes[numLoopsRun - 1], totalRunTime);
+      if (totalRunTime > MAX_TIME) {
         break;
-      case 9:
-#ifdef __CUDACC__
-        assemblePlaneStressResidualKernel<9, 2, 9, 2><<<numBlocks, threadsPerBlock>>>(d_connPtr,
-                                                                                      d_conn,
-                                                                                      numElements,
-                                                                                      d_disp,
-                                                                                      d_xPts2d,
-                                                                                      d_quadPtWeights,
-                                                                                      d_quadPointdNdxi,
-                                                                                      E,
-                                                                                      nu,
-                                                                                      t,
-                                                                                      d_kernelRes);
-#else
-        assemblePlaneStressResidual<9, 2, 9, 2>(connPtr,
-                                                conn,
-                                                numElements,
-                                                disp,
-                                                xPts2d,
-                                                quadPtWeights,
-                                                quadPointdNdxi,
-                                                E,
-                                                nu,
-                                                t,
-                                                kernelRes);
-#endif
-        break;
-      case 16:
-#ifdef __CUDACC__
-        assemblePlaneStressResidualKernel<16, 2, 16, 2><<<numBlocks, threadsPerBlock>>>(d_connPtr,
-                                                                                        d_conn,
-                                                                                        numElements,
-                                                                                        d_disp,
-                                                                                        d_xPts2d,
-                                                                                        d_quadPtWeights,
-                                                                                        d_quadPointdNdxi,
-                                                                                        E,
-                                                                                        nu,
-                                                                                        t,
-                                                                                        d_kernelRes);
-#else
-        assemblePlaneStressResidual<16, 2, 16, 2>(connPtr,
-                                                  conn,
-                                                  numElements,
-                                                  disp,
-                                                  xPts2d,
-                                                  quadPtWeights,
-                                                  quadPointdNdxi,
-                                                  E,
-                                                  nu,
-                                                  t,
-                                                  kernelRes);
-#endif
-        break;
-      case 25:
-#ifdef __CUDACC__
-        assemblePlaneStressResidualKernel<25, 2, 25, 2><<<numBlocks, threadsPerBlock>>>(d_connPtr,
-                                                                                        d_conn,
-                                                                                        numElements,
-                                                                                        d_disp,
-                                                                                        d_xPts2d,
-                                                                                        d_quadPtWeights,
-                                                                                        d_quadPointdNdxi,
-                                                                                        E,
-                                                                                        nu,
-                                                                                        t,
-                                                                                        d_kernelRes);
-#else
-        assemblePlaneStressResidual<25, 2, 25, 2>(connPtr,
-                                                  conn,
-                                                  numElements,
-                                                  disp,
-                                                  xPts2d,
-                                                  quadPtWeights,
-                                                  quadPointdNdxi,
-                                                  E,
-                                                  nu,
-                                                  t,
-                                                  kernelRes);
-#endif
-        break;
-      default:
-        break;
+      }
     }
-#ifdef __CUDACC__
-    gpuErrchk(cudaDeviceSynchronize());
-    cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
-    float runTime;
-    cudaEventElapsedTime(&runTime, start, stop);
-    runTime /= 1000; // Convert to seconds
-    const double kernelResTime = double(runTime);
 
+#ifdef __CUDACC__
     // Copy the residual back to the CPU
     cudaMemcpy(kernelRes, d_kernelRes, numNodes * 2 * sizeof(double), cudaMemcpyDeviceToHost);
-#else
-    t2 = std::chrono::high_resolution_clock::now();
-    /* Getting number of seconds as a double. */
-    tmp = t2 - t1;
-    const double kernelResTime = tmp.count();
 #endif
 
+    // ==============================================================================
+    // Jacobian kernel test
+    // ==============================================================================
+    assemblePlaneStressJacobian<4, 2, 4, 2>(connPtr,
+                                            conn,
+                                            numElements,
+                                            disp,
+                                            xPts2d,
+                                            quadPtWeights,
+                                            quadPointdNdxi,
+                                            E,
+                                            nu,
+                                            t,
+                                            elementBCSRMap,
+                                            kernelRes,
+                                            jacData->A);
     writeArrayToFile<TacsScalar>(kernelRes, resSize, "KernelResidual.csv");
+    writeBCSRMatToFile(jacData, "KernelJacobian.mtx");
 
     // Compute the error
     int maxAbsErrInd, maxRelErrorInd;
@@ -355,9 +281,28 @@ int main(int argc, char *argv[]) {
     printf("Max Err: %10.4e in component %d.\n", maxAbsError, maxAbsErrInd);
     printf("Max REr: %10.4e in component %d.\n", maxRelError, maxRelErrorInd);
 
+    // Compute timing stats for kernel
+    double minTime = runTimes[0];
+    double maxTime = runTimes[0];
+    double avgTime = runTimes[0];
+    for (int ii = 1; ii < numLoopsRun; ii++) {
+      minTime = std::min(minTime, runTimes[ii]);
+      maxTime = std::max(maxTime, runTimes[ii]);
+      avgTime += runTimes[ii];
+    }
+    avgTime /= numLoopsRun;
+    double stdDevTime = 0;
+    for (int ii = 0; ii < numLoopsRun; ii++) {
+      stdDevTime += (runTimes[ii] - avgTime) * (runTimes[ii] - avgTime);
+    }
+    stdDevTime = sqrt(stdDevTime / numLoopsRun);
+
     // Print out the time taken for each part of the computation
-    printf("  TACS residual time: %f s\n", tacsResTime);
-    printf("Kernel residual time: %f s\n", kernelResTime);
+    printf("\n\nTiming statistics over %d runs:\n", numLoopsRun);
+    printf("    Min = %.11e\n", minTime);
+    printf("    Max = %.11e\n", maxTime);
+    printf("    Avg = %.11e\n", avgTime);
+    printf("Std Dev = %.11e\n", stdDevTime);
 
     // Free memory
     delete[] quadPtWeights;
@@ -365,6 +310,10 @@ int main(int argc, char *argv[]) {
     delete[] quadPointdNdxi;
     delete[] xPts2d;
     delete[] kernelRes;
+    for (int ii = 0; ii < numElements; ii++) {
+      delete[] elementBCSRMap[ii];
+    }
+    delete[] elementBCSRMap;
 #ifdef __CUDACC__
     cudaFree(d_connPtr);
     cudaFree(d_conn);
