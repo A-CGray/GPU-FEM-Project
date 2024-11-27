@@ -5,7 +5,7 @@ A2D_INCLUDE = -I${A2D_DIR}/include
 # declare TACS location
 TACS_DIR = ${HOME}/repos/tacs
 
-#CXX = icpc -lmpi # Intel compiler on NAS (doesn't play nice with A2D currently)
+#CXX = icpc -lmpi -qopenmp # Intel compiler on NAS
 CXX = g++ -lmpi # gcc on NAS
 #CXX := mpicxx # MPI compiler on laptop
 RM = rm -f
@@ -20,46 +20,38 @@ CXX_STD := -std=c++17
 
 # GPU compile
 GPU := false
-GPU_CXX := nvcc
+GPU_CXX := nvcc -lmpi
 GPU_CC_FLAGS :=
 MPI_INC =
 MPI_LIB =
 CUDA_LIBS :=
 
-ifeq ($(GPU), true)
-    # dynamically add MPI_INC and MPI_LIB from MPI compiler
-    # since NVIDIA CUDA compiler not linked to MPI
-    MPI_INC := $(shell ${CXX} -showme:incdirs | sed 's|[^ ]*|-I&|g')
-    MPI_LIB := $(shell ${CXX} -showme:libdirs | sed 's|[^ ]*|-L&|g') -lmpi
-    CUDA_LIBS := -L/usr/local/cuda/lib64 -lcudart
+# dynamically add MPI_INC and MPI_LIB from MPI compiler
+# since NVIDIA CUDA compiler not linked to MPI
+#MPI_INC := $(shell ${CXX} -showme:incdirs | sed 's|[^ ]*|-I&|g')
+#MPI_LIB := $(shell ${CXX} -showme:libdirs | sed 's|[^ ]*|-L&|g') -lmpi
+CUDA_LIBS := -L/usr/local/cuda/lib64 -lcudart
 
-    # temporarily suppressing warnings with -w
-    GPU_CC_FLAGS := ${CXX_STD} -w -x cu -Xcompiler
-    # optional sometimes need to downgrade gcc under the hood compiler
-    # GPU_CC_FLAGS := --compiler-bindir=/usr/bin/gcc-10 ${CXX_STD} -x cu -Xcompiler
-endif
+# temporarily suppressing warnings with -w
+GPU_CC_FLAGS := -lmpi -O3 -lineinfo --use_fast_math -arch=sm_70 -x cu
+# optional sometimes need to downgrade gcc under the hood compiler
+# GPU_CC_FLAGS := --compiler-bindir=/usr/bin/gcc-10 -x cu
 
 # Set up for parallel make
 MAKE = make -j 8
 
 # Flags for debugging and regular compilation versions (non GPU)
-EXTRA_DEBUG_CC_FLAGS = ${CXX_STD} -fPIC -g
-EXTRA_CC_FLAGS = ${CXX_STD} -fPIC ${OPT_FLAGS}
+EXTRA_DEBUG_CC_FLAGS = -fPIC -g
+EXTRA_CC_FLAGS = -fPIC -Ofast -march=core-avx2 -mtune=core-avx2
 
 # Set the ar flags
 AR_FLAGS = rcs
-
-# Flags for debugging and regular compilation versions
-EXTRA_DEBUG_CC_FLAGS = -fPIC -g
-EXTRA_CC_FLAGS = -fPIC -O3
 
 # Defines whether to use static or dynamic linking
 # TACS_LD_CMD=${TACS_DIR}/lib/libtacs.a
 TACS_LD_CMD=-L${TACS_DIR}/lib/ -Wl,-rpath,${TACS_DIR}/lib -ltacs
 
-ifeq ($(GPU), true)
-    GPU_TACS_LD_CMD := -L${TACS_DIR}/lib/ -Xlinker -rpath -Xlinker ${TACS_DIR}/lib -ltacs
-endif
+GPU_TACS_LD_CMD := -L${TACS_DIR}/lib/ -Xlinker -rpath -Xlinker ${TACS_DIR}/lib -ltacs
 
 # For linux systems, use the following settings:
 SO_EXT=so
@@ -72,8 +64,12 @@ SO_LINK_FLAGS=-fPIC -shared -qopenmp
 MKLPATH=${MKLROOT}/lib/intel64
 MKL_LIBS = -Wl,--start-group ${MKLPATH}/libmkl_intel_lp64.a ${MKLPATH}/libmkl_sequential.a ${MKLPATH}/libmkl_core.a -Wl,--end-group -lpthread
 
-# LAPACK_LIBS = -limf ${MKL_LIBS}
-LAPACK_LIBS = -L/usr/lib/ -llapack -lpthread -lblas
+ifeq ($(GPU), true)
+    MKL_LIBS = -L${MKLPATH}/libmkl_intel_lp64.a -L${MKLPATH}/libmkl_sequential.a -L${MKLPATH}/libmkl_core.a -lpthread
+endif
+
+LAPACK_LIBS = -limf ${MKL_LIBS}
+# LAPACK_LIBS = -L/usr/lib/ -llapack -lpthread -lblas
 
 
 METIS_DIR = ${TACS_DIR}/extern/metis

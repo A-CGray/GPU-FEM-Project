@@ -11,6 +11,8 @@ L-Bracket mesh generation
 # ==============================================================================
 # Standard Python modules
 # ==============================================================================
+import os
+from typing import Optional
 
 # ==============================================================================
 # External Python modules
@@ -31,6 +33,7 @@ def generateLBracketMesh(
     refine: int = 0,
     smoothingIterations: int = 10,
     visualise: bool = False,
+    outputDir: Optional[str] = None,
 ):
     """
     Generate the L-Bracket geometry using gmsh
@@ -66,7 +69,10 @@ def generateLBracketMesh(
 
     meshName = f"LBracket-Order{order}-{numElements}Elements-{numNodes*2}DOF"
 
-    gmsh.write(f"{meshName}.bdf")
+    if outputDir is None:
+        outputDir = ""
+    outputFile = os.path.join(outputDir, f"{meshName}.bdf")
+    gmsh.write(outputFile)
 
     if visualise:
         gmsh.option.setNumber("Mesh.Nodes", 1)
@@ -75,7 +81,7 @@ def generateLBracketMesh(
 
     gmsh.finalize()
 
-    return meshName
+    return outputFile
 
 
 if __name__ == "__main__":
@@ -90,9 +96,10 @@ if __name__ == "__main__":
     parser.add_argument("--smooth", type=int, default=10)
     parser.add_argument("--refine", type=int, default=0)
     parser.add_argument("--visualise", action="store_true")
+    parser.add_argument("--output", type=str, default=None)
     args = parser.parse_args()
 
-    meshName = generateLBracketMesh(
+    meshFile = generateLBracketMesh(
         sideLength=args.sideLength,
         cutoutSize=args.cutoutSize,
         meshSize=args.meshSize,
@@ -100,7 +107,8 @@ if __name__ == "__main__":
         refine=args.refine,
         smoothingIterations=args.smooth,
         visualise=args.visualise,
+        outputDir=args.output,
     )
 
     if args.order > 1:
-        fixGmshBDF(f"{meshName}.bdf")
+        fixGmshBDF(meshFile)

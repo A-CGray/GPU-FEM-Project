@@ -12,6 +12,7 @@ I want 1st-4th order meshes with 10^3 to 10^7 DOF.
 # ==============================================================================
 # Standard Python modules
 # ==============================================================================
+import os
 
 # ==============================================================================
 # External Python modules
@@ -24,6 +25,11 @@ from generateAnnularMesh import generateAnnularMesh
 from generateLBracketMesh import generateLBracketMesh
 from generateSquareMesh import generateSquareMesh
 
+# Figure out where to put the meshes
+outputDir = "/nobackup/achris10/GPU-FEM-Project/meshes"
+if not os.path.isdir():
+    outputDir = None
+
 # For each geometry we want a way to compute the mesh size that will give use the desired number of DOF.
 # Can try doing this by doing a curve fit of the number of DOF vs mesh size for a first order mesh on each geometry then
 # multiplying by a constant to account for higher order meshes.
@@ -33,10 +39,10 @@ from generateSquareMesh import generateSquareMesh
 # - Third order mesh has roughly 9N DOF
 # - Fourth order mesh has roughly 16N DOF
 elemOrderFactor = [1, 4, 9, 16]
-refineDOFFactor = 4 # Each round of refinement tends to increase the number of DOF by a factor of 4
+refineDOFFactor = 4  # Each round of refinement tends to increase the number of DOF by a factor of 4
 
 # Assume that for larger DOF counts, the number of DOF scales with 1/(element size^2)
-squareCoeff = 2.7456 # NDOF = elemOrderFactor * squareCoeff * 1/(meshSize^2)
+squareCoeff = 2.7456  # NDOF = elemOrderFactor * squareCoeff * 1/(meshSize^2)
 LBracketCoeff = 1.79  # NDOF = elemOrderFactor * LBracketCoeff * 1/(meshSize^2)
 annulusCoef = 5.3025  # NDOF = elemOrderFactor * annulusCoef * 1/(meshSize^2)
 
@@ -54,14 +60,22 @@ for DOF in targetDOF:
             coeff = data["coeff"]
             numRefinements = 0
             refineFactor = 1
-            meshSize = 0.
+            meshSize = 0.0
 
             maxRefinements = 10
             for _ in range(maxRefinements):
-                meshSize = (elemOrderFactor[order - 1] * coeff / (DOF/refineFactor)) ** 0.5
+                meshSize = (elemOrderFactor[order - 1] * coeff / (DOF / refineFactor)) ** 0.5
                 if meshSize > 0.01:
                     break
                 refineFactor *= refineDOFFactor
                 numRefinements += 1
-            print(f"\nFor {name} geometry, {DOF} DOF, order {order} mesh, using mesh size {meshSize} with {numRefinements} refinements")
-            meshFunc(meshSize=meshSize, order=order, refine=numRefinements, smoothingIterations=0)
+            print(
+                f"\nFor {name} geometry, {DOF} DOF, order {order} mesh, using mesh size {meshSize} with {numRefinements} refinements"
+            )
+            meshFunc(
+                meshSize=meshSize,
+                order=order,
+                refine=numRefinements,
+                smoothingIterations=0,
+                outputDir=outputDir,
+            )

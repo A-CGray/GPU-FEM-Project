@@ -130,6 +130,53 @@ void setupTACS(const char *filename,
 }
 
 /**
+ * map[i][j*numNodesPerElement + k] returns the index in the BCSR data array that the block in the local matrix of
+ * element i associated with the coupling between nodes j and k should be written to
+ */
+void generateElementBCSRMap(const int *const connPtr,
+                            const int *const conn,
+                            const int numElements,
+                            const int numNodesPerElement,
+                            const BCSRMatData *const matData,
+                            int **bcsrMap) {
+  // Allocate memory (I know doing this inside a function is a bad idea but it'll do for now)
+  bcsrMap = new int *[numElements];
+  for (int ii = 0; ii < numElements; ii++) {
+    bcsrMap[ii] = new int[numNodesPerElement * numNodesPerElement];
+  }
+
+  const int blockLength = matData->bsize;
+
+  // Build the map
+  for (int ii = 0; ii < numElements; ii++) {
+    const int *const elemNodes = &conn[connPtr[ii]];
+    for (int iNode = 0; iNode < numNodesPerElement; iNode++) {
+      const int blockRowInd = elemNodes[iNode];
+      const int rowStart = matData->rowp[blockRowInd];
+      const int rowEnd = matData->rowp[blockRowInd + 1];
+
+      for (int jNode = 0; jNode < numNodesPerElement; jNode++) {
+        const int blockColInd = elemNodes[jNode];
+        // We know which row and column index in the block matrix we're looking for, but we don't know how many other
+        // blocks there are in this row of the matrix, so we need to search along the column indices for this row until
+        // we find the one corresponding to this jNode.
+        bool foundCol = false;
+        for (int jj = rowStart; jj < rowEnd; jj++) {
+          if (matData->cols[jj] == blockColInd) {
+            foundCol = true;
+            bcsrMap[ii][iNode * numNodesPerElement + jNode] = jj * blockLength;
+            break;
+          }
+        }
+        if (!foundCol) {
+          printf("Couldn't find a block for column %d in row %d\n", blockColInd, blockRowInd);
+        }
+      }
+    }
+  }
+}
+
+/**
  * @brief Compute the u and v displacements to set at the point (x, y)
  *
  * @param x x coordinate
@@ -152,7 +199,6 @@ void displacementField(const TacsScalar x, const TacsScalar y, TacsScalar &u, Ta
 void setAnalyticDisplacements(
     TACSAssembler *assembler,
     void (*const displacementFieldFunc)(const TacsScalar x, const TacsScalar y, TacsScalar &u, TacsScalar &v)) {
-
   // Create a node vector
   TACSBVec *nodeVec = assembler->createNodeVec();
   nodeVec->incref();
@@ -229,7 +275,6 @@ void writeBCSRMatToFile(BCSRMatData *const matData, const char *filename) {
     fprintf(stderr, "Failed to open file %s\n", filename);
   }
 }
-
 
 void writeTACSSolution(TACSAssembler *assembler, const char *filename) {
   // Create an TACSToFH5 object for writing output to files
