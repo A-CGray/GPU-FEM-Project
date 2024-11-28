@@ -35,16 +35,22 @@ __global__ void evalLagrangePoly2dDeriv(double *x, double *N, double *dNdxi) {
   const int arrayInd = GLOBAL_THREAD_ID;
   const int numKnots = order + 1;
   if (arrayInd < ARRAY_SIZE) {
+    double localN = 0.;
+    double localdNdxi[2] = {0.0, 0.0};
     const int nodeXInd = (arrayInd / numKnots) % numKnots;
     const int nodeYInd = arrayInd % numKnots;
     for (int ii = 0; ii < NUM_EVALS; ii++) {
       const int xPtInd = (arrayInd + ii) % ARRAY_SIZE;
       double nTemp, dNdxTemp[2];
       lagrangePoly2dDeriv<double, order>(&x[2 * xPtInd], nodeXInd, nodeYInd, nTemp, dNdxTemp);
-      N[ii] += nTemp;
-      dNdxi[arrayInd] += dNdxTemp[0];
-      dNdxi[arrayInd + 1] += dNdxTemp[1];
+      localN += nTemp;
+      localdNdxi[0] += dNdxTemp[0];
+      localdNdxi[1] += dNdxTemp[1];
     }
+
+    N[arrayInd] += localN;
+    dNdxi[arrayInd] = localdNdxi[0];
+    dNdxi[arrayInd + 1] = localdNdxi[1];
   }
 }
 
