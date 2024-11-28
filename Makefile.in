@@ -14,7 +14,10 @@ RM = rm -f
 GPU_DIR = ${HOME}/repos/GPU-FEM-Project
 GPU_MACRO_INCLUDE=-I${GPU_DIR}
 
-BENCHMARK_LINK=-lbenchmark
+BENCHMARK_DIR := ${HOME}/packages/benchmark
+BENCHMARK_LINK := -L${BENCHMARK_DIR}/build/src -lbenchmark -lpthread
+BENCHMARK_INCLUDE := -I${BENCHMARK_DIR}/include
+
 
 CXX_STD := -std=c++17
 
@@ -22,7 +25,7 @@ CXX_STD := -std=c++17
 DEBUG := false
 
 # GPU compile
-GPU := false
+GPU := true
 GPU_CXX := nvcc -lmpi
 GPU_CC_FLAGS :=
 MPI_INC =
@@ -36,8 +39,8 @@ CUDA_LIBS :=
 CUDA_LIBS := -L/usr/local/cuda/lib64 -lcudart
 
 # temporarily suppressing warnings with -w
-GPU_CC_FLAGS := -lmpi -O3 -lineinfo --use_fast_math -arch=sm_70 -x cu
-GPU_CC_DEBUG_FLAGS := -lmpi -g -lineinfo -arch=sm_70 -x cu
+GPU_CC_FLAGS := -O3 -lineinfo --use_fast_math -arch=sm_70 -x cu
+GPU_CC_DEBUG_FLAGS := -g -lineinfo -arch=sm_70 -x cu
 # optional sometimes need to downgrade gcc under the hood compiler
 # GPU_CC_FLAGS := --compiler-bindir=/usr/bin/gcc-10 -x cu
 

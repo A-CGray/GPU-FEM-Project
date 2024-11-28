@@ -25,6 +25,18 @@ __HOST_AND_DEVICE__ numType lagrangePoly1d(const numType x, const int nodeInd) {
   return result;
 }
 
+template <>
+__HOST_AND_DEVICE__ double lagrangePoly1d<double, 1>(const double x, const int nodeInd) {
+  switch (nodeInd) {
+    case 0:
+      return 0.5 * (1 - x);
+    case 1:
+      return 0.5 * (1 + x);
+    default:
+      return 0.0;
+  }
+}
+
 /**
  * @brief Compute the value and derivative of the nth Lagrange polynomial at a given point x
  *
@@ -42,6 +54,24 @@ __HOST_AND_DEVICE__ void lagrangePoly1dDeriv(const numType x, const int nodeInd,
   A2D::ADScalar<numType, 1> result = lagrangePoly1d<A2D::ADScalar<numType, 1>, order>(input, nodeInd);
   N = result.value;
   dNdx = result.deriv[0];
+}
+
+template <>
+__HOST_AND_DEVICE__ void lagrangePoly1dDeriv<double, 1>(const double x, const int nodeInd, double &N, double &dNdx) {
+  switch (nodeInd) {
+    case 0:
+      N = 0.5 * (1 - x);
+      dNdx = -0.5;
+      return;
+    case 1:
+      N = 0.5 * (1 + x);
+      dNdx = 0.5;
+      return;
+    default:
+      N = 0.0;
+      dNdx = 0.0;
+      return;
+  }
 }
 
 /**

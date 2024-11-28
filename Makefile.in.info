@@ -14,7 +14,9 @@ RM = rm -f
 GPU_DIR = ${HOME}/repos/GPU-FEM-Project
 GPU_MACRO_INCLUDE=-I${GPU_DIR}
 
-BENCHMARK_LINK=-lbenchmark
+BENCHMARK_DIR := ${HOME}/packages/benchmark
+BENCHMARK_LINK := -L${BENCHMARK_DIR}/build/src -lbenchmark -lpthread
+BENCHMARK_INCLUDE := -I${BENCHMARK_DIR}/include
 
 CXX_STD := -std=c++17
 

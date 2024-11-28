@@ -1,19 +1,30 @@
 include ../Makefile.in
+include ../common.mk
 
-CXX = g++
-CXXFLAGS = -std=c++17 # -Wall -Wextra -pedantic
-CXXOPTFLAGS = -Ofast -march=native -mtune=native
-CXXDEBUGFLAGS = -g
-LINK_FLAGS =
+CXXFLAGS = $(TACS_OPT_CC_FLAGS)
+INCLUDE_FLAGS := $(A2D_INCLUDE) $(GPU_MACRO_INCLUDE)
+LD_FLAGS :=
 
+ifeq ($(GPU), true)
+	CXX := ${GPU_CXX}
+	CXXFLAGS := ${GPU_CC_FLAGS} -Xcompiler "${CXXFLAGS}"
+endif
 
 .PHONY: benchmark
-default: CXXFLAGS += $(CXXOPTFLAGS)
-default: LINK_FLAGS += $(BENCHMARK_LINK)
-default: LagrangePolyBenchmark.exe
+benchmark: LD_FLAGS += $(BENCHMARK_LINK)
+benchmark: INCLUDE_FLAGS += ${BENCHMARK_INCLUDE}
+benchmark: LagrangePolyBenchmark.exe
 
-%.exe: %.cpp
-	$(CXX) $< $(CXXFLAGS) $(A2D_INCLUDE) $(LINK_FLAGS) -o $@
+.PHONY: gpuBenchmark
+gpuBenchmark: LD_FLAGS += $(BENCHMARK_LINK)
+gpuBenchmark: INCLUDE_FLAGS += ${BENCHMARK_INCLUDE}
+gpuBenchmark: LagrangePolyGPUBenchmark.exe
+
+%.exe: %.cpp $(deps)
+	$(CXX) ${CXX_STD}  $< $(CXXFLAGS) ${INCLUDE_FLAGS} ${LD_FLAGS} -o $@
+	@echo
+	@echo "        --- Successfully compiled $*.cpp to $*.exe ---"
+	@echo
 
 .PHONY: clean
 clean:
