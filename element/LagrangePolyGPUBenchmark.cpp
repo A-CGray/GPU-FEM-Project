@@ -110,11 +110,6 @@ void lagrangePolyGPUEvalBenchmarkTemplate(benchmark::State &state) {
   benchmark::DoNotOptimize(dNdx);
 }
 
-BENCHMARK(lagrangePolyGPUEvalBenchmarkTemplate<1, 32>)->Unit(benchmark::kMicrosecond)->Name("Order 1 blockSize 32");
-BENCHMARK(lagrangePolyGPUEvalBenchmarkTemplate<2, 32>)->Unit(benchmark::kMicrosecond)->Name("Order 2 blockSize 32");
-BENCHMARK(lagrangePolyGPUEvalBenchmarkTemplate<3, 32>)->Unit(benchmark::kMicrosecond)->Name("Order 3 blockSize 32");
-BENCHMARK(lagrangePolyGPUEvalBenchmarkTemplate<4, 32>)->Unit(benchmark::kMicrosecond)->Name("Order 4 blockSize 32");
-
 BENCHMARK(lagrangePolyGPUEvalBenchmarkTemplate<1, 128>)->Unit(benchmark::kMicrosecond)->Name("Order 1 blockSize 128");
 BENCHMARK(lagrangePolyGPUEvalBenchmarkTemplate<2, 128>)->Unit(benchmark::kMicrosecond)->Name("Order 2 blockSize 128");
 BENCHMARK(lagrangePolyGPUEvalBenchmarkTemplate<3, 128>)->Unit(benchmark::kMicrosecond)->Name("Order 3 blockSize 128");

@@ -13,7 +13,7 @@
  * @return numType Value of the Lagrange polynomial at x
  */
 template <typename numType, int order>
-__HOST_AND_DEVICE__ numType lagrangePoly1d(const numType x, const int nodeInd) {
+__HOST_AND_DEVICE__ inline numType lagrangePoly1d(const numType x, const int nodeInd) {
   numType result = 1.0;
   const numType xj = -1 + 2.0 * nodeInd / order;
   for (int ii = 0; ii < order + 1; ii++) {
@@ -26,12 +26,42 @@ __HOST_AND_DEVICE__ numType lagrangePoly1d(const numType x, const int nodeInd) {
 }
 
 template <>
-__HOST_AND_DEVICE__ double lagrangePoly1d<double, 1>(const double x, const int nodeInd) {
+__HOST_AND_DEVICE__ inline double lagrangePoly1d<double, 1>(const double x, const int nodeInd) {
   switch (nodeInd) {
     case 0:
       return 0.5 * (1 - x);
     case 1:
       return 0.5 * (1 + x);
+    default:
+      return 0.0;
+  }
+}
+
+template <>
+__HOST_AND_DEVICE__ inline double lagrangePoly1d<double, 2>(const double x, const int nodeInd) {
+  switch (nodeInd) {
+    case 0:
+      return -0.5 * x * (1.0 - x);
+    case 1:
+      return (1.0 - x) * (1.0 + x);
+    case 2:
+      return 0.5 * (1.0 + x) * x;
+    default:
+      return 0.0;
+  }
+}
+
+template <>
+__HOST_AND_DEVICE__ inline double lagrangePoly1d<double, 3>(const double x, const int nodeInd) {
+  switch (nodeInd) {
+    case 0:
+      return -(2.0 / 3.0) * (0.5 + x) * (0.5 - x) * (1.0 - x);
+    case 1:
+      return (4.0 / 3.0) * (1.0 + x) * (0.5 - x) * (1.0 - x);
+    case 2:
+      return (4.0 / 3.0) * (1.0 + x) * (0.5 + x) * (1.0 - x);
+    case 3:
+      return -(2.0 / 3.0) * (1.0 + x) * (0.5 + x) * (0.5 - x);
     default:
       return 0.0;
   }
@@ -48,7 +78,7 @@ __HOST_AND_DEVICE__ double lagrangePoly1d<double, 1>(const double x, const int n
  * @param dNdx Variable to store the derivative of the polynomial in
  */
 template <typename numType, int order>
-__HOST_AND_DEVICE__ void lagrangePoly1dDeriv(const numType x, const int nodeInd, numType &N, numType &dNdx) {
+__HOST_AND_DEVICE__ inline void lagrangePoly1dDeriv(const numType x, const int nodeInd, numType &N, numType &dNdx) {
   A2D::ADScalar<numType, 1> input(x);
   input.deriv[0] = 1.0;
   A2D::ADScalar<numType, 1> result = lagrangePoly1d<A2D::ADScalar<numType, 1>, order>(input, nodeInd);
@@ -57,7 +87,8 @@ __HOST_AND_DEVICE__ void lagrangePoly1dDeriv(const numType x, const int nodeInd,
 }
 
 template <>
-__HOST_AND_DEVICE__ void lagrangePoly1dDeriv<double, 1>(const double x, const int nodeInd, double &N, double &dNdx) {
+__HOST_AND_DEVICE__ inline void
+lagrangePoly1dDeriv<double, 1>(const double x, const int nodeInd, double &N, double &dNdx) {
   switch (nodeInd) {
     case 0:
       N = 0.5 * (1 - x);
@@ -66,6 +97,56 @@ __HOST_AND_DEVICE__ void lagrangePoly1dDeriv<double, 1>(const double x, const in
     case 1:
       N = 0.5 * (1 + x);
       dNdx = 0.5;
+      return;
+    default:
+      N = 0.0;
+      dNdx = 0.0;
+      return;
+  }
+}
+
+template <>
+__HOST_AND_DEVICE__ inline void
+lagrangePoly1dDeriv<double, 2>(const double x, const int nodeInd, double &N, double &dNdx) {
+  switch (nodeInd) {
+    case 0:
+      N = -0.5 * x * (1.0 - x);
+      dNdx = -0.5 + x;
+      return;
+    case 1:
+      N = (1.0 - x) * (1.0 + x);
+      dNdx = -2 * x;
+      return;
+    case 2:
+      N = 0.5 * (1.0 + x) * x;
+      dNdx = 0.5 + x;
+      return;
+    default:
+      N = 0.0;
+      dNdx = 0.0;
+      return;
+  }
+}
+
+template <>
+__HOST_AND_DEVICE__ inline void
+lagrangePoly1dDeriv<double, 3>(const double x, const int nodeInd, double &N, double &dNdx) {
+  switch (nodeInd) {
+    case 0:
+      N = -(2.0 / 3.0) * (0.5 + x) * (0.5 - x) * (1.0 - x);
+      dNdx = -2.0 * x * x + (4.0 / 3.0) * x + 1.0 / 6.0;
+      return;
+    case 1:
+      N = (4.0 / 3.0) * (1.0 + x) * (0.5 - x) * (1.0 - x);
+      dNdx = 4.0 * x * x - (4.0 / 3.0) * x - 4.0 / 3.0;
+      return;
+    case 2:
+      N = (4.0 / 3.0) * (1.0 + x) * (0.5 + x) * (1.0 - x);
+      dNdx = -4.0 * x * x - (4.0 / 3.0) * x + 4.0 / 3.0;
+      return;
+    case 3:
+      N = -(2.0 / 3.0) * (1.0 + x) * (0.5 + x) * (0.5 - x);
+      dNdx = 2.0 * x * x + (4.0 / 3.0) * x - 1.0 / 6.0;
       return;
     default:
       N = 0.0;
@@ -85,7 +166,7 @@ __HOST_AND_DEVICE__ void lagrangePoly1dDeriv<double, 1>(const double x, const in
  * @return numType Value of polynomial at x
  */
 template <typename numType, int order>
-__HOST_AND_DEVICE__ numType lagrangePoly2d(const numType x[2], const int nodeXInd, const int nodeYInd) {
+__HOST_AND_DEVICE__ inline numType lagrangePoly2d(const numType x[2], const int nodeXInd, const int nodeYInd) {
   return lagrangePoly1d<numType, order>(x[0], nodeXInd) * lagrangePoly1d<numType, order>(x[1], nodeYInd);
 }
 
@@ -101,7 +182,7 @@ __HOST_AND_DEVICE__ numType lagrangePoly2d(const numType x[2], const int nodeXIn
  * @param deriv Array to store the derivatives of the polynomial in
  */
 template <typename numType, int order>
-__HOST_AND_DEVICE__ void
+__HOST_AND_DEVICE__ inline void
 lagrangePoly2dDeriv(const numType x[2], const int nodeXInd, const int nodeYInd, numType &N, numType deriv[2]) {
   numType Nx, Ny, dNdx, dNdy;
   lagrangePoly1dDeriv<numType, order>(x[0], nodeXInd, Nx, dNdx);
