@@ -27,44 +27,75 @@ __HOST_AND_DEVICE__ inline numType lagrangePoly1d(const numType x, const int nod
 
 template <>
 __HOST_AND_DEVICE__ inline double lagrangePoly1d<double, 1>(const double x, const int nodeInd) {
-  switch (nodeInd) {
-    case 0:
-      return 0.5 * (1 - x);
-    case 1:
-      return 0.5 * (1 + x);
-    default:
-      return 0.0;
-  }
+  // Precomputed coefficients for each basis function
+  static const double coeffs[2][2] = {
+      {-0.5, 0.5}, // N0
+      {0.5, 0.5},  // N1
+  };
+
+  // Get coefficients for this node
+  const double *poly = coeffs[nodeInd];
+
+  // Polynomial evaluation: a*x + b
+  return fma(poly[0], x, poly[1]);
 }
 
 template <>
 __HOST_AND_DEVICE__ inline double lagrangePoly1d<double, 2>(const double x, const int nodeInd) {
-  switch (nodeInd) {
-    case 0:
-      return -0.5 * x * (1.0 - x);
-    case 1:
-      return (1.0 - x) * (1.0 + x);
-    case 2:
-      return 0.5 * (1.0 + x) * x;
-    default:
-      return 0.0;
-  }
+  // Precomputed coefficients for each basis function
+  static const double coeffs[3][3] = {
+      {0.5, -0.5, 0.0}, // N0
+      {-1.0, 0.0, 1.0}, // N1
+      {0.5, 0.5, 0.0},  // N2
+  };
+
+  // Get coefficients for this node
+  const double *poly = coeffs[nodeInd];
+
+  // Polynomial evaluation: a*x^2 + b*x + c
+  return fma(poly[0], x * x, fma(poly[1], x, poly[2]));
 }
 
 template <>
 __HOST_AND_DEVICE__ inline double lagrangePoly1d<double, 3>(const double x, const int nodeInd) {
-  switch (nodeInd) {
-    case 0:
-      return -(2.0 / 3.0) * (0.5 + x) * (0.5 - x) * (1.0 - x);
-    case 1:
-      return (4.0 / 3.0) * (1.0 + x) * (0.5 - x) * (1.0 - x);
-    case 2:
-      return (4.0 / 3.0) * (1.0 + x) * (0.5 + x) * (1.0 - x);
-    case 3:
-      return -(2.0 / 3.0) * (1.0 + x) * (0.5 + x) * (0.5 - x);
-    default:
-      return 0.0;
-  }
+  // Precomputed coefficients for each basis function
+  static const double coeffs[4][4] = {
+      {-0.5625, 0.5625, 0.0625, -0.0625}, // N0
+      {1.6875, -0.5625, -1.6875, 0.5625}, // N1
+      {-1.6875, -0.5625, 1.6875, 0.5625}, // N2
+      {0.5625, 0.5625, -0.0625, -0.0625}  // N3
+  };
+
+  // Get coefficients for this node
+  const double *poly = coeffs[nodeInd];
+
+  const double x2 = x * x;
+  const double x3 = x2 * x;
+
+  // Polynomial evaluation: a*x^3 + b*x^2 + c*x + d
+  return fma(poly[0], x3, fma(poly[1], x2, fma(poly[2], x, poly[3])));
+}
+
+template <>
+__HOST_AND_DEVICE__ inline double lagrangePoly1d<double, 4>(const double x, const int nodeInd) {
+  // Precomputed coefficients for each basis function
+  static const double coeffs[5][5] = {
+      {2.0 / 3.0, -2.0 / 3.0, -1.0 / 6.0, 1.0 / 6.0, 0.0}, // N0
+      {-8.0 / 3.0, 4.0 / 3.0, 8.0 / 3.0, -4.0 / 3.0, 0.0}, // N1
+      {4.0, 0.0, -5.0, 0.0, 1.0},                          // N2
+      {-8.0 / 3.0, -4.0 / 3.0, 8.0 / 3.0, 4.0 / 3.0, 0.0}, // N3
+      {2.0 / 3.0, 2.0 / 3.0, -1.0 / 6.0, -1.0 / 6.0, 0.0}  // N4
+  };
+
+  // Get coefficients for this node
+  const double *poly = coeffs[nodeInd];
+
+  const double x2 = x * x;
+  const double x3 = x2 * x;
+  const double x4 = x2 * x2;
+
+  // Polynomial evaluation: a*x^4 + b*x^3 + c*x^2 + d*x + e
+  return fma(poly[0], x4, fma(poly[1], x3, fma(poly[2], x2, fma(poly[3], x, poly[4]))));
 }
 
 /**
@@ -89,70 +120,90 @@ __HOST_AND_DEVICE__ inline void lagrangePoly1dDeriv(const numType x, const int n
 template <>
 __HOST_AND_DEVICE__ inline void
 lagrangePoly1dDeriv<double, 1>(const double x, const int nodeInd, double &N, double &dNdx) {
-  switch (nodeInd) {
-    case 0:
-      N = 0.5 * (1 - x);
-      dNdx = -0.5;
-      return;
-    case 1:
-      N = 0.5 * (1 + x);
-      dNdx = 0.5;
-      return;
-    default:
-      N = 0.0;
-      dNdx = 0.0;
-      return;
-  }
+  // Precomputed coefficients for each basis function
+  static const double coeffs[2][2] = {
+      {-0.5, 0.5}, // N0
+      {0.5, 0.5},  // N1
+  };
+
+  // Get coefficients for this node
+  const double *poly = coeffs[nodeInd];
+
+  // Polynomial evaluation: a*x + b
+  N = fma(poly[0], x, poly[1]);
+
+  // Derivative: a
+  dNdx = poly[0];
 }
 
 template <>
 __HOST_AND_DEVICE__ inline void
 lagrangePoly1dDeriv<double, 2>(const double x, const int nodeInd, double &N, double &dNdx) {
-  switch (nodeInd) {
-    case 0:
-      N = -0.5 * x * (1.0 - x);
-      dNdx = -0.5 + x;
-      return;
-    case 1:
-      N = (1.0 - x) * (1.0 + x);
-      dNdx = -2 * x;
-      return;
-    case 2:
-      N = 0.5 * (1.0 + x) * x;
-      dNdx = 0.5 + x;
-      return;
-    default:
-      N = 0.0;
-      dNdx = 0.0;
-      return;
-  }
+  // Precomputed coefficients for each basis function
+  static const double coeffs[3][3] = {
+      {0.5, -0.5, 0.0}, // N0
+      {-1.0, 0.0, 1.0}, // N1
+      {0.5, 0.5, 0.0},  // N2
+  };
+
+  // Get coefficients for this node
+  const double *poly = coeffs[nodeInd];
+
+  // Polynomial evaluation: a*x^2 + b*x + c
+  N = fma(poly[0], x * x, fma(poly[1], x, poly[2]));
+
+  // Derivative: 2*a*x + b
+  dNdx = fma(2 * poly[0], x, poly[1]);
 }
 
 template <>
 __HOST_AND_DEVICE__ inline void
 lagrangePoly1dDeriv<double, 3>(const double x, const int nodeInd, double &N, double &dNdx) {
-  switch (nodeInd) {
-    case 0:
-      N = -(2.0 / 3.0) * (0.5 + x) * (0.5 - x) * (1.0 - x);
-      dNdx = -2.0 * x * x + (4.0 / 3.0) * x + 1.0 / 6.0;
-      return;
-    case 1:
-      N = (4.0 / 3.0) * (1.0 + x) * (0.5 - x) * (1.0 - x);
-      dNdx = 4.0 * x * x - (4.0 / 3.0) * x - 4.0 / 3.0;
-      return;
-    case 2:
-      N = (4.0 / 3.0) * (1.0 + x) * (0.5 + x) * (1.0 - x);
-      dNdx = -4.0 * x * x - (4.0 / 3.0) * x + 4.0 / 3.0;
-      return;
-    case 3:
-      N = -(2.0 / 3.0) * (1.0 + x) * (0.5 + x) * (0.5 - x);
-      dNdx = 2.0 * x * x + (4.0 / 3.0) * x - 1.0 / 6.0;
-      return;
-    default:
-      N = 0.0;
-      dNdx = 0.0;
-      return;
-  }
+  // Precomputed coefficients for each basis function
+  static const double coeffs[4][4] = {
+      {-0.5625, 0.5625, 0.0625, -0.0625}, // N0
+      {1.6875, -0.5625, -1.6875, 0.5625}, // N1
+      {-1.6875, -0.5625, 1.6875, 0.5625}, // N2
+      {0.5625, 0.5625, -0.0625, -0.0625}  // N3
+  };
+
+  // Get coefficients for this node
+  const double *poly = coeffs[nodeInd];
+
+  const double x2 = x * x;
+  const double x3 = x2 * x;
+
+  // Polynomial evaluation: a*x^3 + b*x^2 + c*x + d
+  N = fma(poly[0], x3, fma(poly[1], x2, fma(poly[2], x, poly[3])));
+
+  // Derivative: 3*a*x^2 + 2*b*x + c
+  dNdx = fma(3 * poly[0], x2, fma(2 * poly[1], x, poly[2]));
+}
+
+template <>
+__HOST_AND_DEVICE__ inline void
+lagrangePoly1dDeriv<double, 4>(const double x, const int nodeInd, double &N, double &dNdx) {
+  // Precomputed coefficients for each basis function
+  static const double coeffs[5][5] = {
+      {2.0 / 3.0, -2.0 / 3.0, -1.0 / 6.0, 1.0 / 6.0, 0.0}, // N0
+      {-8.0 / 3.0, 4.0 / 3.0, 8.0 / 3.0, -4.0 / 3.0, 0.0}, // N1
+      {4.0, 0.0, -5.0, 0.0, 1.0},                          // N2
+      {-8.0 / 3.0, -4.0 / 3.0, 8.0 / 3.0, 4.0 / 3.0, 0.0}, // N3
+      {2.0 / 3.0, 2.0 / 3.0, -1.0 / 6.0, -1.0 / 6.0, 0.0}  // N4
+  };
+
+  // Get coefficients for this node
+  const double *poly = coeffs[nodeInd];
+
+  const double x2 = x * x;
+  const double x3 = x2 * x;
+  const double x4 = x2 * x2;
+
+  // Polynomial evaluation: a*x^4 + b*x^3 + c*x^2 + d*x + e
+  N = fma(poly[0], x4, fma(poly[1], x3, fma(poly[2], x2, fma(poly[3], x, poly[4]))));
+
+  // Derivative: 4*a*x^3 + 3*b^2 + 2*c*x + d
+  dNdx = fma(4 * poly[0], x3, fma(3 * poly[1], x2, fma(2 * poly[2], x, poly[3])));
 }
 
 /**
@@ -204,7 +255,7 @@ class Lagrange2DBasis {
 };
 
 // int main() {
-//   const int order = 5;
+//   const int order = 1;
 //   const double x = 0.1234;
 
 //   printf("Evaluating Lagrange shape functions of order %d at x = %f\n", order, x);
@@ -212,7 +263,7 @@ class Lagrange2DBasis {
 //     double N, N2, dNdx;
 //     N = lagrangePoly1d<double, order>(x, ii);
 //     lagrangePoly1dDeriv<double, order>(x, ii, N2, dNdx);
-//     printf("N_%d = % f, dN_%d/dx = % f\n", ii, N2, ii, dNdx);
+//     printf("N_%d = % f, dN_%d/dx = % f\n", ii, N, ii, dNdx);
 //   }
 //   return 0;
 // }
