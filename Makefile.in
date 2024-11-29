@@ -76,8 +76,8 @@ ifeq ($(GPU), true)
     MKL_LIBS = -L${MKLPATH}/libmkl_intel_lp64.a -L${MKLPATH}/libmkl_sequential.a -L${MKLPATH}/libmkl_core.a -lpthread
 endif
 
-# LAPACK_LIBS = -limf ${MKL_LIBS}
-LAPACK_LIBS = -L/usr/lib/ -llapack -lpthread -lblas
+LAPACK_LIBS = -limf ${MKL_LIBS}
+#LAPACK_LIBS = -L/usr/lib/ -llapack -lpthread -lblas
 
 
 METIS_DIR = ${TACS_DIR}/extern/metis

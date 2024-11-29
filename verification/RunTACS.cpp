@@ -18,7 +18,7 @@
 // Extension Includes
 // =============================================================================
 // #include "../element/ElementStruct.h"
-#include "../element/ResidualKernelPrototype.h"
+#include "../element/FEKernels.h"
 #include "TACSAssembler.h"
 #include "TACSElementVerification.h"
 #include "TACSHelpers.h"
@@ -28,7 +28,7 @@
 // =============================================================================
 const int MAX_TIMING_LOOPS = 100;
 const double MAX_TIME = 30;
-const int JAC_WRITE_SIZE_LIMIT = 1000 / 2;
+const int JAC_WRITE_SIZE_LIMIT = 1000;
 const int RES_WRITE_SIZE_LIMIT = 1000;
 
 // ==============================================================================
@@ -102,7 +102,13 @@ int main(int argc, char *argv[]) {
 
     // --- Evaluate Jacobian and write out up to 1000 rows ---
     TACSSchurMat *mat = assembler->createSchurMat(nodeOrdering);
+
+    auto t1 = std::chrono::high_resolution_clock::now();
     assembler->assembleJacobian(1.0, 0.0, 0.0, NULL, mat);
+    auto t2 = std::chrono::high_resolution_clock::now();
+    /* Getting number of seconds as a double. */
+    std::chrono::duration<double> tmp = t2 - t1;
+    const double tacsJacTime = tmp.count();
     BCSRMat *jac;
     mat->getBCSRMat(&jac, NULL, NULL, NULL);
     BCSRMatData *jacData = jac->getMatData();
@@ -111,22 +117,25 @@ int main(int argc, char *argv[]) {
     printf("nCols: %d\n", jacData->ncols);
     printf("Block size: %d\n", jacData->bsize);
 
-    writeBCSRMatToFile(jacData, "TACSJacobian.mtx", JAC_WRITE_SIZE_LIMIT, JAC_WRITE_SIZE_LIMIT);
+    writeBCSRMatToFile(jacData, "TACSJacobian.mtx", JAC_WRITE_SIZE_LIMIT / 2, JAC_WRITE_SIZE_LIMIT / 2);
     mat->zeroEntries();
 
-    int **elementBCSRMap;
+    int *elementBCSRMap;
+    const int elementBCSRMapSize = numElements * numNodesPerElement * numNodesPerElement;
+    elementBCSRMap = new int[elementBCSRMapSize];
     generateElementBCSRMap(connPtr, conn, numElements, numNodesPerElement, jacData, elementBCSRMap);
 
     // --- Evaluate residual and write to file ---
     // TODO: Why does the ordering of the residual not seem to be affected by the matrix ordering type?
     TACSBVec *res = assembler->createVec();
-    auto t1 = std::chrono::high_resolution_clock::now();
+    t1 = std::chrono::high_resolution_clock::now();
     assembler->assembleRes(res);
-    auto t2 = std::chrono::high_resolution_clock::now();
+    t2 = std::chrono::high_resolution_clock::now();
     /* Getting number of seconds as a double. */
-    std::chrono::duration<double> tmp = t2 - t1;
+    tmp = t2 - t1;
     const double tacsResTime = tmp.count();
     assembler->reorderVec(res);
+
     if (assembler->isReordered()) {
       printf("Assembler is reordered\n");
     }
@@ -225,7 +234,15 @@ int main(int argc, char *argv[]) {
 
     double *d_kernelRes;
     cudaMalloc(&d_kernelRes, numNodes * 2 * sizeof(double));
-    cudaMemcpy(d_kernelRes, kernelRes, numNodes * 2 * sizeof(double), cudaMemcpyHostToDevice);
+
+    double *d_matEntries;
+    int matDataLength = jacData->bsize * jacData->bsize * jacData->rowp[jacData->nrows];
+    cudaMalloc(&d_matEntries, matDataLength * sizeof(double));
+
+    int *d_elementBCSRMap;
+    cudaMalloc(&d_elementBCSRMap, elementBCSRMapSize * sizeof(int));
+    cudaMemcpy(d_elementBCSRMap, elementBCSRMap, elementBCSRMapSize * sizeof(int), cudaMemcpyHostToDevice);
+
 #endif
 
     // ==============================================================================
@@ -251,6 +268,22 @@ int main(int argc, char *argv[]) {
                                                         nu,
                                                         t,
                                                         d_kernelRes);
+
+      cudaMemset(d_matEntries, 0, matDataLength * sizeof(double));
+      jacobianRunTimes[numLoopsRun] = runJacobianKernel(numNodesPerElement,
+                                                        d_connPtr,
+                                                        d_conn,
+                                                        numElements,
+                                                        d_disp,
+                                                        d_xPts2d,
+                                                        d_quadPtWeights,
+                                                        d_quadPointdNdxi,
+                                                        E,
+                                                        nu,
+                                                        t,
+                                                        d_elementBCSRMap,
+                                                        nullptr,
+                                                        d_matEntries);
 #else
       memset(kernelRes, 0, numNodes * 2 * sizeof(double));
       residualRunTimes[numLoopsRun] = runResidualKernel(numNodesPerElement,
@@ -298,13 +331,15 @@ int main(int argc, char *argv[]) {
 #ifdef __CUDACC__
     // Copy the residual back to the CPU
     cudaMemcpy(kernelRes, d_kernelRes, numNodes * 2 * sizeof(double), cudaMemcpyDeviceToHost);
+    // Copy the mat entries into the TACS matrix
+    cudaMemcpy(jacData->A, d_matEntries, matDataLength * sizeof(double), cudaMemcpyDeviceToHost);
 #endif
 
     // --- Write out the first 1000 entries of the residual ---
     writeArrayToFile<TacsScalar>(kernelRes, std::min(resSize, RES_WRITE_SIZE_LIMIT), "KernelResidual.csv");
 
-    // --- Write out the stiffness matrix if this model has <1000 DOF ---
-    writeBCSRMatToFile(jacData, "KernelJacobian.mtx", JAC_WRITE_SIZE_LIMIT, JAC_WRITE_SIZE_LIMIT);
+    // --- Write out the first 1000 rows and columns of the Jacobian ---
+    writeBCSRMatToFile(jacData, "KernelJacobian.mtx", JAC_WRITE_SIZE_LIMIT / 2, JAC_WRITE_SIZE_LIMIT / 2);
 
     // Compute the error in the residual
     int maxAbsErrInd, maxRelErrorInd;
@@ -312,7 +347,7 @@ int main(int argc, char *argv[]) {
     double maxRelError = TacsGetMaxRelError(kernelRes, tacsResArray, resSize, &maxRelErrorInd);
     bool residualMatch = TacsAssertAllClose(kernelRes, tacsResArray, resSize, 1e-6, 1e-6);
     if (residualMatch) {
-      printf("Residuals match\n");
+      printf("\n\nResiduals match\n");
     }
     else {
       printf("Residuals do not match\n");
@@ -321,11 +356,18 @@ int main(int argc, char *argv[]) {
     printf("Max REr: %10.4e in component %d.\n", maxRelError, maxRelErrorInd);
 
     // Compute timing stats for residual and jacobian kernels
-    printf("\n\nResidual kernel timing stats:\n");
+    printf("\n\nTiming stats for problem with %d CQUAD%d elements and %d DOF:\n",
+           numElements,
+           numNodesPerElement,
+           numNodes * 2);
+    printf("Residual kernel:\n");
     computeTimingStats(residualRunTimes, numLoopsRun);
 
-    printf("\n\nJacobian kernel timing stats:\n");
+    printf("\n\nJacobian kernel:\n");
     computeTimingStats(jacobianRunTimes, numLoopsRun);
+
+    printf("\n\nTime taken for a single TACS residual assembly was %f s\n", tacsResTime);
+    printf("Time taken for a single TACS jacobian assembly was %f s\n", tacsJacTime);
 
     // Free memory
     delete[] quadPtWeights;
@@ -333,9 +375,6 @@ int main(int argc, char *argv[]) {
     delete[] quadPointdNdxi;
     delete[] xPts2d;
     delete[] kernelRes;
-    for (int ii = 0; ii < numElements; ii++) {
-      delete[] elementBCSRMap[ii];
-    }
     delete[] elementBCSRMap;
 #ifdef __CUDACC__
     cudaFree(d_connPtr);
@@ -345,6 +384,7 @@ int main(int argc, char *argv[]) {
     cudaFree(d_quadPtWeights);
     cudaFree(d_quadPointdNdxi);
     cudaFree(d_kernelRes);
+    cudaFree(d_elementBCSRMap);
 #endif
   }
 

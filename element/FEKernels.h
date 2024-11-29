@@ -5,7 +5,7 @@
 #include "adscalar.h"
 
 template <typename T>
-void printMat(const T mat) {
+__HOST_AND_DEVICE__ void printMat(const T mat) {
   for (int ii = 0; ii < mat.nrows; ii++) {
     printf("[");
     for (int jj = 0; jj < mat.ncols; jj++) {
@@ -53,7 +53,6 @@ __DEVICE__ void scatterResidual(const int *const connPtr,
   }
 }
 
-// TODO: Figure out why this segfaults
 template <int numNodes, int numStates>
 __DEVICE__ void scatterMat(const int *const connPtr,
                            const int *const conn,
@@ -64,7 +63,6 @@ __DEVICE__ void scatterMat(const int *const connPtr,
 #ifndef NDEBUG
   printf("\nScattering matrix for element %d\n", elementInd);
 #endif
-  const int blockSize = numStates * numStates;
   const int numDOF = numNodes * numStates;
   for (int iNode = 0; iNode < numNodes; iNode++) {
     for (int jNode = 0; jNode < numNodes; jNode++) {
@@ -321,7 +319,7 @@ void assemblePlaneStressJacobian(const int *const connPtr,
                                  const double E,
                                  const double nu,
                                  const double t,
-                                 int **bcsrMap,
+                                 int *bcsrMap,
                                  double *const residual,
                                  double *const matEntries) {
 #pragma omp parallel for
@@ -427,7 +425,12 @@ void assemblePlaneStressJacobian(const int *const connPtr,
       }
     }
     // --- Scatter the local element Jacobian into the global matrix ---
-    scatterMat<numNodes, numStates>(connPtr, conn, elementInd, bcsrMap[elementInd], localMat, matEntries);
+    scatterMat<numNodes, numStates>(connPtr,
+                                    conn,
+                                    elementInd,
+                                    &bcsrMap[elementInd * numNodes * numNodes],
+                                    localMat,
+                                    matEntries);
 
     // --- Scatter local residual back to global array---
     if (residual != nullptr) {
@@ -437,6 +440,150 @@ void assemblePlaneStressJacobian(const int *const connPtr,
 }
 
 #ifdef __CUDACC__
+template <int numNodes,
+          int numStates,
+          int numQuadPts,
+          int numDim,
+          A2D::GreenStrainType strainType = A2D::GreenStrainType::LINEAR>
+__global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
+                                                  const int *const conn,
+                                                  const int numElements,
+                                                  const double *const states,
+                                                  const double *const nodeCoords,
+                                                  const double *const quadPtWeights,
+                                                  const double *const quadPointdNdxi,
+                                                  const double E,
+                                                  const double nu,
+                                                  const double t,
+                                                  int *bcsrMap,
+                                                  double *const residual,
+                                                  double *const matEntries) {
+
+  // One element per thread
+  const int elementInd = blockIdx.x * blockDim.x + threadIdx.x;
+  if (elementInd < numElements) {
+    // Get the element nodal states and coordinates
+    A2D::Mat<double, numNodes, numStates> localNodeStates;
+    A2D::Mat<double, numNodes, numDim> localNodeCoords;
+    gatherElementData<numNodes, numStates, numDim>(connPtr,
+                                                   conn,
+                                                   elementInd,
+                                                   states,
+                                                   nodeCoords,
+                                                   localNodeStates,
+                                                   localNodeCoords);
+
+    A2D::Mat<double, numNodes, numStates> localRes;
+    const int numDOF = numNodes * numStates;
+    A2D::Mat<double, numDOF, numDOF> localMat;
+
+    // Now the main quadrature loop
+    for (int quadPtInd = 0; quadPtInd < numQuadPts; quadPtInd++) {
+#ifndef NDEBUG
+      printf("Running `assemblePlaneStressJacobianKernel` element %d\n", elementInd);
+#endif
+
+      // Put the quadrature point basis gradients into an A2D mat
+      A2D::Mat<double, numNodes, numDim> dNdxi(&quadPointdNdxi[quadPtInd * numNodes * numDim]);
+
+      // Compute Jacobian, J = dx/dxi
+      A2D::Mat<double, numDim, numDim> J, JInv;
+      interpParamGradient<numNodes, numDim, numDim>(localNodeCoords, dNdxi, J);
+
+      // --- Compute J^-1 and detJ ---
+      A2D::MatInv(J, JInv);
+      double detJ;
+      A2D::MatDet(J, detJ);
+
+      // --- Compute state gradient in physical space ---
+      A2D::Mat<double, numStates, numDim> dudx;
+      interpRealGradient(localNodeStates, dNdxi, JInv, dudx);
+
+      // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight and
+      // detJ)
+      A2D::Mat<double, numStates, numDim> weakRes;
+      planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeights[quadPtInd] * detJ, weakRes);
+
+      // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
+      addTransformStateGradSens<numNodes, numStates, numDim>(weakRes, JInv, dNdxi, localRes);
+
+      // We will compute the element Jac one column at a time, essentially doing a forward AD pass through the residual
+      // calculation
+
+      // Create a matrix of AD scalars that will store dudx and it's forward seed
+      A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> dudxFwd;
+      for (int ii = 0; ii < numStates; ii++) {
+        for (int jj = 0; jj < numDim; jj++) {
+          dudxFwd(ii, jj).value = dudx(ii, jj);
+        }
+      }
+      for (int nodeInd = 0; nodeInd < numNodes; nodeInd++) {
+        // Technically we should set a forward seed of 1 in q(nodeInd, stateInd) and 0 in all other entries, then
+        // propogate that seed through the state gradient interpolation, but because we are only seeding a single
+        // nodal state each round, we only need to use the basis function gradient for that node to propogate through
+        // the state gradient calculation
+        for (int stateInd = 0; stateInd < numStates; stateInd++) {
+          // Forward seed of dudxi is a matrix with dNdxi in the row corresponding to this state
+          A2D::Mat<double, numStates, numDim> dudxiDot, dudxDot;
+          for (int ii = 0; ii < numDim; ii++) {
+            dudxiDot(stateInd, ii) = dNdxi(nodeInd, ii);
+          }
+          // Now propogate through dudx = dudxi * J^-1
+          A2D::MatMatMult(dudxiDot, JInv, dudxDot);
+
+          // Now we will do a forward AD pass through the weak residual calculation by setting dudxDot as the seed in
+          // the state gradient
+          for (int ii = 0; ii < numStates; ii++) {
+            for (int jj = 0; jj < numDim; jj++) {
+              dudxFwd(ii, jj).deriv[0] = dudxDot(ii, jj);
+            }
+          }
+          A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> weakResFwd;
+          planeStressWeakRes<strainType>(dudxFwd, E, nu, t, quadPtWeights[quadPtInd] * detJ, weakResFwd);
+
+          // Put the forward seed of the weak residual into it's own matrix
+          A2D::Mat<double, numStates, numDim> weakResDot;
+          for (int ii = 0; ii < numStates; ii++) {
+            for (int jj = 0; jj < numDim; jj++) {
+              weakResDot(ii, jj) = weakResFwd(ii, jj).deriv[0];
+            }
+          }
+
+          // Now propogate through the transformation of the state gradient sensitivity, this gives us this quad point's
+          // contribution to this column of the element jacobian
+          A2D::Mat<double, numNodes, numStates> matColContribution;
+          addTransformStateGradSens<numNodes, numStates, numDim>(weakResDot, JInv, dNdxi, matColContribution);
+
+          // Add this column contribution to the element jacobian
+          const int colInd = nodeInd * numStates + stateInd;
+          for (int ii = 0; ii < numNodes; ii++) {
+            for (int jj = 0; jj < numStates; jj++) {
+              const int rowInd = ii * numStates + jj;
+              localMat(colInd, rowInd) += matColContribution(ii, jj);
+            }
+          }
+        }
+      }
+    }
+#ifndef NDEBUG
+    printf("Local element Jacobian = ");
+    printMat(localMat);
+#endif
+    // --- Scatter the local element Jacobian into the global matrix ---
+    scatterMat<numNodes, numStates>(connPtr,
+                                    conn,
+                                    elementInd,
+                                    &bcsrMap[elementInd * numNodes * numNodes],
+                                    localMat,
+                                    matEntries);
+
+    // --- Scatter local residual back to global array---
+    if (residual != nullptr) {
+      scatterResidual(connPtr, conn, elementInd, localRes, residual);
+    }
+  }
+}
+
 template <int numNodes,
           int numStates,
           int numQuadPts,
@@ -603,7 +750,7 @@ double runJacobianKernel(const int numNodesPerElement,
                          const double E,
                          const double nu,
                          const double t,
-                         int **elementBCSRMap,
+                         int *elementBCSRMap,
                          double *const residual,
                          double *const matEntries) {
 #ifdef __CUDACC__
@@ -620,6 +767,22 @@ double runJacobianKernel(const int numNodesPerElement,
 #endif
 
 // Helper macro so I don't have to write out all these inputs every time
+#ifdef __CUDACC__
+#define ASSEMBLE_PLANE_STRESS_JACOBIAN(numNodes)                                                                       \
+  assemblePlaneStressJacobianKernel<numNodes, 2, numNodes, 2><<<numBlocks, threadsPerBlock>>>(connPtr,                 \
+                                                                                              conn,                    \
+                                                                                              numElements,             \
+                                                                                              states,                  \
+                                                                                              nodeCoords,              \
+                                                                                              quadPtWeights,           \
+                                                                                              quadPointdNdxi,          \
+                                                                                              E,                       \
+                                                                                              nu,                      \
+                                                                                              t,                       \
+                                                                                              elementBCSRMap,          \
+                                                                                              residual,                \
+                                                                                              matEntries);
+#else
 #define ASSEMBLE_PLANE_STRESS_JACOBIAN(numNodes)                                                                       \
   assemblePlaneStressJacobian<numNodes, 2, numNodes, 2>(connPtr,                                                       \
                                                         conn,                                                          \
@@ -634,7 +797,8 @@ double runJacobianKernel(const int numNodesPerElement,
                                                         elementBCSRMap,                                                \
                                                         residual,                                                      \
                                                         matEntries);
-  // We need a bunch of if statements here because the kernel is templated on the number of nodes, which we only
+#endif
+  // We need a switch statement here because the kernel is templated on the number of nodes, which we only
   // know at runtime
   switch (numNodesPerElement) {
     case 4:

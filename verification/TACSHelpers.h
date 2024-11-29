@@ -130,26 +130,24 @@ void setupTACS(const char *filename,
 }
 
 /**
- * map[i][j*numNodesPerElement + k] returns the index in the BCSR data array that the block in the local matrix of
- * element i associated with the coupling between nodes j and k should be written to
+ * map[i*numNodesPerElement*numNodesPerElement + j*numNodesPerElement + k] returns the index in the BCSR data array that
+ * the block in the local matrix of element i associated with the coupling between nodes j and k should be written to
+ *
+ * MEMORY MUST HAVE ALREADY BEEN ALLOCATED FOR THE BCSRMAP!
  */
 void generateElementBCSRMap(const int *const connPtr,
                             const int *const conn,
                             const int numElements,
                             const int numNodesPerElement,
                             const BCSRMatData *const matData,
-                            int **&bcsrMap) {
-  // Allocate memory (I know doing this inside a function is a bad idea but it'll do for now)
-  bcsrMap = new int *[numElements];
-  for (int ii = 0; ii < numElements; ii++) {
-    bcsrMap[ii] = new int[numNodesPerElement * numNodesPerElement];
-  }
+                            int *&bcsrMap) {
 
   const int blockLength = matData->bsize * matData->bsize;
+  const int elemDataLength = numNodesPerElement * numNodesPerElement;
 
   // Build the map
-  for (int ii = 0; ii < numElements; ii++) {
-    const int *const elemNodes = &conn[connPtr[ii]];
+  for (int iElem = 0; iElem < numElements; iElem++) {
+    const int *const elemNodes = &conn[connPtr[iElem]];
     for (int iNode = 0; iNode < numNodesPerElement; iNode++) {
       const int blockRowInd = elemNodes[iNode];
       const int rowStart = matData->rowp[blockRowInd];
@@ -164,12 +162,12 @@ void generateElementBCSRMap(const int *const connPtr,
         for (int jj = rowStart; jj < rowEnd; jj++) {
           if (matData->cols[jj] == blockColInd) {
             foundCol = true;
-            bcsrMap[ii][iNode * numNodesPerElement + jNode] = jj * blockLength;
+            bcsrMap[iElem * elemDataLength + iNode * numNodesPerElement + jNode] = jj * blockLength;
 #ifndef NDEBUG
             printf("Block associated with node i = %d, node j = %d in element %d starts at index %d in BCSR data\n",
                    iNode,
                    jNode,
-                   ii,
+                   iElem,
                    jj * blockLength);
 #endif
             break;
