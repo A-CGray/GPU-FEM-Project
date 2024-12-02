@@ -439,7 +439,6 @@ void assemblePlaneStressJacobian(const int *const connPtr,
   }
 }
 
-#ifdef __CUDACC__
 template <int numNodes,
           int numStates,
           int numQuadPts,
@@ -668,7 +667,7 @@ double runResidualKernel(const int numNodesPerElement,
                          double *const residual) {
 #ifdef __CUDACC__
   // Figure out how many blocks and threads to use
-  const int threadsPerBlock = 4 * 32;
+  const int threadsPerBlock = 32;
   const int numBlocks = (numElements + threadsPerBlock - 1) / threadsPerBlock;
   // --- Create timing events ---
   cudaEvent_t start, stop;

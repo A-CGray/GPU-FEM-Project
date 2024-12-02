@@ -369,6 +369,10 @@ int main(int argc, char *argv[]) {
     printf("\n\nTime taken for a single TACS residual assembly was %f s\n", tacsResTime);
     printf("Time taken for a single TACS jacobian assembly was %f s\n", tacsJacTime);
 
+    // Write timing results to files
+    writeArrayToFile(residualRunTimes, numLoopsRun, "ResidualTimings.csv");
+    writeArrayToFile(jacobianRunTimes, numLoopsRun, "JacobianTimings.csv");
+
     // Free memory
     delete[] quadPtWeights;
     delete[] quadPtN;

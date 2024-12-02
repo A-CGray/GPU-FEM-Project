@@ -1,4 +1,5 @@
 import glob
+import os
 
 from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
@@ -12,15 +13,16 @@ plt.style.use(niceplots.get_style())
 plotMarkers = {"Annulus": "o", "Square": "s", "LBracket": "^"}
 plotColors = niceplots.get_colors_list()
 
-meshFiles = glob.glob("*.bdf")
+meshFiles = glob.glob("/nobackup/achris10/GPU-FEM-Project/meshes/*.bdf")
 
-fig, ax = plt.subplots()
+fig, ax = plt.subplots(figsize=(10,10))
 ax.set_xscale("log")
 ax.set_xlabel("Number of Elements")
 ax.set_yscale("log")
 ax.set_ylabel("Number of DOF")
 for meshFile in meshFiles:
-    nameParts = meshFile[:-4].split("-")
+    name = os.path.split(meshFile)[-1]
+    nameParts = name[:-4].split("-")
     geomType = nameParts[0]
     elementOrder = int(nameParts[1][-1])
     numElements = int(nameParts[2].replace("Elements", ""))
@@ -52,4 +54,5 @@ niceplots.adjust_spines(ax)
 geomLegend = ax.legend(geomHandles, geomLabels, title="Mesh Geometry:", loc="upper left")
 ax.add_artist(geomLegend)
 ax.legend(orderHandles, orderLabels, title="Element Order:", loc="lower right", labelcolor="linecolor")
-plt.show()
+
+niceplots.save_figs(fig, "MeshSizes", formats=["pdf", "png"])
