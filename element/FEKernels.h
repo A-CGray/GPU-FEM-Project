@@ -520,21 +520,20 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
         // propogate that seed through the state gradient interpolation, but because we are only seeding a single
         // nodal state each round, we only need to use the basis function gradient for that node to propogate through
         // the state gradient calculation
-        for (int stateInd = 0; stateInd < numStates; stateInd++) {
-          // Forward seed of dudxi is a matrix with dNdxi in the row corresponding to this state
-          A2D::Mat<double, numStates, numDim> dudxiDot, dudxDot;
-          for (int ii = 0; ii < numDim; ii++) {
-            dudxiDot(stateInd, ii) = dNdxi(nodeInd, ii);
-          }
-          // Now propogate through dudx = dudxi * J^-1
-          A2D::MatMatMult(dudxiDot, JInv, dudxDot);
 
+        // Forward seed of dudxi is just dNdxi for this node
+        A2D::Mat<double, 1, numDim> dudxiDot, dudxDot;
+        for (int ii = 0; ii < numDim; ii++) {
+          dudxiDot[ii] = dNdxi(nodeInd, ii);
+        }
+        // Now propogate through dudx = dudxi * J^-1
+        A2D::MatMatMult(dudxiDot, JInv, dudxDot);
+        for (int stateInd = 0; stateInd < numStates; stateInd++) {
           // Now we will do a forward AD pass through the weak residual calculation by setting dudxDot as the seed in
           // the state gradient
-          for (int ii = 0; ii < numStates; ii++) {
-            for (int jj = 0; jj < numDim; jj++) {
-              dudxFwd(ii, jj).deriv[0] = dudxDot(ii, jj);
-            }
+          dudxFwd.zero();
+          for (int jj = 0; jj < numDim; jj++) {
+            dudxFwd(stateInd, jj).deriv[0] = dudxDot[jj];
           }
           A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> weakResFwd;
           planeStressWeakRes<strainType>(dudxFwd, E, nu, t, quadPtWeights[quadPtInd] * detJ, weakResFwd);
