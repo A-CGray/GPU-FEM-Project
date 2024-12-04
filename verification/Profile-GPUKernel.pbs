@@ -23,7 +23,7 @@ for meshFile in $meshDir/*.bdf; do
     echo Running with mesh file: $meshFile &>> $outputDir/Profile-GPUKernel.out
     ./RunTACS.exe $meshFile &>> $outputDir/Profile-GPUKernel.out
 
-    if [[ $status != 0 ]]; then
+    if [[ $? != 0 ]]; then
         echo "Opening ${meshFile} failed"
     else
 
@@ -35,4 +35,14 @@ for meshFile in $meshDir/*.bdf; do
             mv $file $outputDir/$baseMeshName-$file
         done
     fi
+done
+
+# --- Run NSight compute profiler on the 4 different 1MDOF square meshes ---
+## declare an array variable
+declare -a profileFiles=("Square-Order1-495296Elements-993026DOF" "Square-Order2-122798Elements-984818DOF" "Square-Order3-58713Elements-1059332DOF" "Square-Order4-30652Elements-983298DOF")
+
+for f in "${profileFiles[@]}"
+do
+   meshFile=$meshDir/$f.bdf
+   ncu -f --set full -o $outputDir/$f ./RunTACS.exe $meshFile &>> $outputDir/Profile-GPUKernel.out
 done
