@@ -39,7 +39,7 @@ CUDA_LIBS :=
 CUDA_LIBS := -L/usr/local/cuda/lib64 -lcudart
 
 # temporarily suppressing warnings with -w
-GPU_CC_FLAGS := -O3 -lineinfo --use_fast_math -arch=sm_70 -x cu
+GPU_CC_FLAGS := -Xptxas -v -lineinfo -O3 --use_fast_math --extra-device-vectorization -arch=sm_70 -x cu
 GPU_CC_DEBUG_FLAGS := -g -lineinfo -arch=sm_70 -x cu
 # optional sometimes need to downgrade gcc under the hood compiler
 # GPU_CC_FLAGS := --compiler-bindir=/usr/bin/gcc-10 -x cu

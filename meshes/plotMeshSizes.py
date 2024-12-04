@@ -15,7 +15,7 @@ plotColors = niceplots.get_colors_list()
 
 meshFiles = glob.glob("/nobackup/achris10/GPU-FEM-Project/meshes/*.bdf")
 
-fig, ax = plt.subplots(figsize=(10,10))
+fig, ax = plt.subplots(figsize=(10,8))
 ax.set_xscale("log")
 ax.set_xlabel("Number of Elements")
 ax.set_yscale("log")
@@ -54,5 +54,8 @@ niceplots.adjust_spines(ax)
 geomLegend = ax.legend(geomHandles, geomLabels, title="Mesh Geometry:", loc="upper left")
 ax.add_artist(geomLegend)
 ax.legend(orderHandles, orderLabels, title="Element Order:", loc="lower right", labelcolor="linecolor")
+
+ax.set_xlim(1,1e7)
+ax.set_ylim(1,1e7)
 
 niceplots.save_figs(fig, "MeshSizes", formats=["pdf", "png"])

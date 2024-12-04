@@ -3,22 +3,36 @@
 #PBS -q devel@pbspl4
 #PBS -l select=1:model=sky_gpu:ncpus=1:ngpus=1:mem=32GB
 #PBS -l place=free:shared
-#PBS -l walltime=0:20:00
+#PBS -l walltime=1:00:00
 #PBS -o Profile-GPUKernel_pbs.log
 #PBS -j oe
 #PBS -r n
 #PBS -W group_list=a1607
 #PBS -m ba
 
+projectDir=/nobackup/achris10/GPU-FEM-Project
+meshDir=$projectDir/meshes
 
+outputDir=$projectDir/Baseline
+mkdir -p $outputDir
 
 make clean
-make
-projectDir=/nobackup/achris10/GPU-FEM-Project
-for meshFile in $projectDir/meshes/*.bdf; do
-    echo Running with mesh file: $meshFile
-    ./RunTACS.exe $meshFile
+make &> $outputDir/Profile-GPUKernel.out
+
+for meshFile in $meshDir/*.bdf; do
+    echo Running with mesh file: $meshFile &>> $outputDir/Profile-GPUKernel.out
+    ./RunTACS.exe $meshFile &>> $outputDir/Profile-GPUKernel.out
+
     if [[ $status != 0 ]]; then
         echo "Opening ${meshFile} failed"
+    else
+
+        baseMeshName=$(basename ${meshFile})
+        baseMeshName=${baseMeshName%.*}
+
+        # Move results to nobackup
+        for file in JacobianTimings.csv ResidualTimings.csv TACSResidual.csv TACSJacobian.mtx KernelResidual.csv KernelJacobian.mtx; do
+            mv $file $outputDir/$baseMeshName-$file
+        done
     fi
 done
