@@ -116,7 +116,7 @@ __DEVICE__ void addTransformStateGradSens(const double xi[numDim],
 
   if constexpr (cost1 > cost2) {
     // --- Compute J^-1 * dfduPrime^T ---
-    A2D::Mat<double, numDim, numVals> temp[numDim * numVals];
+    A2D::Mat<double, numDim, numVals> temp;
     A2D::MatMatMult<A2D::MatOp::NORMAL, A2D::MatOp::TRANSPOSE>(JInv, stateGradSens, temp);
     // for (int ii = 0; ii < numDim; ii++) {
     //   for (int jj = 0; jj < numVals; jj++) {
@@ -134,10 +134,9 @@ __DEVICE__ void addTransformStateGradSens(const double xi[numDim],
         double dNidxi[numDim], N;
         lagrangePoly2dDeriv<double, order>(xi, nodeXInd, nodeYInd, N, dNidxi);
 
-        for (int jj = 0; jj < numVals; jj++) {
-          nodalValSens[nodeInd * numVals + jj] = 0.0;
-          for (int kk = 0; kk < numDim; kk++) {
-            nodalValSens[nodeInd * numVals + jj] += dNidxi[kk] * temp[kk * numVals + jj];
+        for (int kk = 0; kk < numDim; kk++) {
+          for (int jj = 0; jj < numVals; jj++) {
+            nodalValSens(nodeInd, jj) += dNidxi[kk] * temp(kk, jj);
           }
         }
       }
@@ -153,7 +152,7 @@ __DEVICE__ void addTransformStateGradSens(const double xi[numDim],
         lagrangePoly2dDeriv<double, order>(xi, nodeXInd, nodeYInd, N, dNidxi);
         for (int jj = 0; jj < numDim; jj++) {
           for (int kk = 0; kk < numDim; kk++) {
-            temp(nodeInd, jj) += dNidxi[kk] * JInv(kk, jj); //[kk * numDim + jj];
+            temp(nodeInd, jj) += dNidxi[kk] * JInv(kk, jj);
           }
         }
       }
@@ -163,7 +162,7 @@ __DEVICE__ void addTransformStateGradSens(const double xi[numDim],
     for (int ii = 0; ii < numNodes; ii++) {
       for (int jj = 0; jj < numVals; jj++) {
         for (int kk = 0; kk < numDim; kk++) {
-          nodalValSens[ii * numVals + jj] += temp[ii * numDim + kk] * stateGradSens[jj * numVals + kk];
+          nodalValSens(ii, jj) += temp(ii, kk) * stateGradSens(jj, kk);
         }
       }
     }
@@ -484,10 +483,6 @@ __global__ void assemblePlaneStressResidualKernel(const int *const connPtr,
                                                    nodeCoords,
                                                    localNodeStates,
                                                    localNodeCoords);
-
-    for (int ii = 0; ii < numNodes * numStates; ii++) {
-      localRes[ii] = 0.0;
-    }
 
     // Now the main quadrature loop
     for (int quadPtXInd = 0; quadPtXInd < (order + 1); quadPtXInd++) {
