@@ -104,7 +104,7 @@ template <int order, int numVals, int numDim>
 __DEVICE__ void addTransformStateGradSens(const double xi[numDim],
                                           const A2D::Mat<double, numVals, numDim> stateGradSens,
                                           const A2D::Mat<double, numDim, numDim> JInv,
-                                          A2D::Mat<double, (order + 1) * (order + 1), numVals> &nodalValSens) {
+                                          double nodalValSens[(order + 1) * (order + 1) * numVals]) {
   constexpr int numNodes = (order + 1) * (order + 1);
 
   // dfdq = NPrimeParam * J^-1 * dfduPrime^T
@@ -136,7 +136,11 @@ __DEVICE__ void addTransformStateGradSens(const double xi[numDim],
 
         for (int kk = 0; kk < numDim; kk++) {
           for (int jj = 0; jj < numVals; jj++) {
-            nodalValSens(nodeInd, jj) += dNidxi[kk] * temp(kk, jj);
+#ifdef __CUDACC__
+            atomicAdd(&nodalValSens[nodeInd * numVals + jj], dNidxi[kk] * temp(kk, jj));
+#else
+            nodalValSens[nodeInd * numVals + jj] += dNidxi[kk] * temp(kk, jj);
+#endif
           }
         }
       }
@@ -162,7 +166,12 @@ __DEVICE__ void addTransformStateGradSens(const double xi[numDim],
     for (int ii = 0; ii < numNodes; ii++) {
       for (int jj = 0; jj < numVals; jj++) {
         for (int kk = 0; kk < numDim; kk++) {
-          nodalValSens(ii, jj) += temp(ii, kk) * stateGradSens(jj, kk);
+
+#ifdef __CUDACC__
+          atomicAdd(&nodalValSens[ii * numVals + jj], temp(ii, kk) * stateGradSens(jj, kk));
+#else
+          nodalValSens[ii * numVals + jj] += temp(ii, kk) * stateGradSens(jj, kk);
+#endif
         }
       }
     }
@@ -172,7 +181,7 @@ __DEVICE__ void addTransformStateGradSens(const double xi[numDim],
 // dudxi = localNodeValues^T * dNdxi
 template <int order, int numVals, int numDim>
 __DEVICE__ void interpParamGradient(const double xi[numDim],
-                                    const A2D::Mat<double, (order + 1) * (order + 1), numVals> nodalValues,
+                                    const double nodalValues[(order + 1) * (order + 1) * numVals],
                                     A2D::Mat<double, numVals, numDim> &dudxi) {
   dudxi.zero();
   for (int nodeYInd = 0; nodeYInd < (order + 1); nodeYInd++) {
@@ -202,7 +211,7 @@ __DEVICE__ void interpParamGradient(const double xi[numDim],
 // dudx = localNodeValues^T * dNdxi * JInv
 template <int order, int numVals, int numDim>
 __DEVICE__ void interpRealGradient(const double xi[numDim],
-                                   const A2D::Mat<double, (order + 1) * (order + 1), numVals> nodalValues,
+                                   const double nodalValues[(order + 1) * (order + 1) * numVals],
                                    const A2D::Mat<double, numDim, numDim> JInv,
                                    A2D::Mat<double, numVals, numDim> &dudx) {
   // dudxi = localNodeStates^T * dNdxi
@@ -456,7 +465,81 @@ void assemblePlaneStressJacobian(const int *const connPtr,
 }
 
 #ifdef __CUDACC__
-template <int order, int numStates, int numDim, A2D::GreenStrainType strainType = A2D::GreenStrainType::LINEAR>
+template <int numElements, int numNodes, int valsPerNode>
+__device__ void gatherElementNodalValues(const int *const connPtr,
+                                         const int *const conn,
+                                         const double *const globalData,
+                                         const int threadID,
+                                         const int blockSize,
+                                         const int firstElemGlobalInd,
+                                         double elemData[numElements][numNodes * valsPerNode]) {
+  const int valsPerElem = numNodes * valsPerNode;
+
+  for (int ii = threadID; ii < numElements * valsPerElem; ii += blockSize) {
+    const int elemLoadInd = ii / valsPerElem; // Which element am I loading data for
+    const int globalElemLoadInd =
+        firstElemGlobalInd + elemLoadInd;                // What's the global index of the element I'm loading data for
+    const int arrayLoadInd = ii % valsPerElem;           // Which entry of the array for this element am I loading
+    const int nodeLoadInd = arrayLoadInd / valsPerNode;  // Which node within the element am I loading data for
+    const int stateLoadInd = arrayLoadInd % valsPerNode; // Which state am I loading for this node?
+    const int globalNodeLoadInd =
+        conn[connPtr[globalElemLoadInd] + nodeLoadInd]; // What's the global ID of the node I'm loading data for
+
+    const int globalDataInd = globalNodeLoadInd * valsPerNode + stateLoadInd;
+
+#ifndef NDEBUG
+    printf("thread %d loading value %d for node %d in element %d, from index %d in global vector\n",
+           threadID,
+           stateLoadInd,
+           nodeLoadInd,
+           globalElemLoadInd,
+           globalDataInd);
+#endif
+
+    elemData[elemLoadInd][nodeLoadInd * valsPerNode + stateLoadInd] = globalData[globalDataInd];
+  }
+}
+
+template <int numElements, int numNodes, int valsPerNode>
+__device__ void scatterElementNodalValues(const int *const connPtr,
+                                          const int *const conn,
+                                          const int threadID,
+                                          const int blockSize,
+                                          const int firstElemGlobalInd,
+                                          const double elemData[numElements][numNodes * valsPerNode],
+                                          double *globalData) {
+  const int valsPerElem = numNodes * valsPerNode;
+
+  for (int ii = threadID; ii < numElements * valsPerElem; ii += blockSize) {
+    const int elemWriteInd = ii / valsPerElem; // Which element am I writing data for
+    const int globalElemWriteInd =
+        firstElemGlobalInd + elemWriteInd;                // What's the global index of the element I'm writing data for
+    const int arrayWriteInd = ii % valsPerElem;           // Which entry of the array for this element am I writing
+    const int nodeWriteInd = arrayWriteInd / valsPerNode; // Which node within the element am I writing data for
+    const int stateWriteInd = arrayWriteInd % valsPerNode; // Which state am I writing for this node?
+    const int globalNodeWriteInd =
+        conn[connPtr[globalElemWriteInd] + nodeWriteInd]; // What's the global ID of the node I'm writing data for
+
+    const int globalDataInd = globalNodeWriteInd * valsPerNode + stateWriteInd;
+
+#ifndef NDEBUG
+    printf("thread %d writing value %d from node %d in element %d, to index %d in global vector\n",
+           threadID,
+           stateWriteInd,
+           nodeWriteInd,
+           globalElemWriteInd,
+           globalDataInd);
+#endif
+
+    atomicAdd(&globalData[globalDataInd], elemData[elemWriteInd][nodeWriteInd * valsPerNode + stateWriteInd]);
+  }
+}
+
+template <int order,
+          int numStates,
+          int numDim,
+          int elemPerBlock = 1,
+          A2D::GreenStrainType strainType = A2D::GreenStrainType::LINEAR>
 __global__ void assemblePlaneStressResidualKernel(const int *const connPtr,
                                                   const int *const conn,
                                                   const int numElements,
@@ -467,58 +550,118 @@ __global__ void assemblePlaneStressResidualKernel(const int *const connPtr,
                                                   const double t,
                                                   double *const residual) {
   constexpr int numNodes = (order + 1) * (order + 1);
+  constexpr int numQuadPts = numNodes;
 
-  // One element per thread
-  const int elementInd = blockIdx.x * blockDim.x + threadIdx.x;
-  if (elementInd < numElements) {
-    // printf("Running `assemblePlaneStressResidualKernel` element %d\n", elementInd);
-    // Get the element nodal states and coordinates
-    A2D::Mat<double, numNodes, numStates> localNodeStates;
-    A2D::Mat<double, numNodes, numDim> localNodeCoords;
-    A2D::Mat<double, numNodes, numStates> localRes;
-    gatherElementData<numNodes, numStates, numDim>(connPtr,
-                                                   conn,
-                                                   elementInd,
-                                                   states,
-                                                   nodeCoords,
-                                                   localNodeStates,
-                                                   localNodeCoords);
+  // Figure out various thread indices, one thread per quad point
+  const int blockSize = blockDim.x;
+  const int localThreadInd = threadIdx.x;
+  const int localElementInd = localThreadInd / numQuadPts;
+  const int globalElementInd = elemPerBlock * blockIdx.x + localElementInd;
+  const int quadPtInd = localThreadInd % numQuadPts;
+
+  // ==============================================================================
+  // Load element data
+  // ==============================================================================
+  // Local element data will live in shared memory as arrays of A2Dmats
+  __shared__ double localNodeStates[elemPerBlock][numNodes * numStates];
+  __shared__ double localNodeCoords[elemPerBlock][numNodes * numDim];
+  __shared__ double localRes[elemPerBlock][numNodes * numStates];
+
+  // zero the local residual
+  for (int ii = threadIdx.x; ii < (elemPerBlock * numNodes * numStates); ii += blockDim.x) {
+    const int DOFPerElem = numNodes * numStates;
+    const int eInd = ii / DOFPerElem;
+    const int arrInd = ii % DOFPerElem;
+    localRes[eInd][arrInd] = 0.0;
+  }
+  __syncthreads();
+
+#ifndef NDEBUG
+  printf("assemblePlaneStressResidualKernel: Created shared memory\n");
+#endif
+
+  gatherElementNodalValues<elemPerBlock, numNodes, numStates>(connPtr,
+                                                              conn,
+                                                              states,
+                                                              localThreadInd,
+                                                              blockSize,
+                                                              blockIdx.x * elemPerBlock,
+                                                              localNodeStates);
+
+  gatherElementNodalValues<elemPerBlock, numNodes, numDim>(connPtr,
+                                                           conn,
+                                                           nodeCoords,
+                                                           localThreadInd,
+                                                           blockSize,
+                                                           blockIdx.x * elemPerBlock,
+                                                           localNodeCoords);
+
+#ifndef NDEBUG
+  printf("assemblePlaneStressResidualKernel: Finished loading element data\n");
+#endif
+
+  __syncthreads();
+
+  const bool isActiveThread = globalElementInd < numElements && localElementInd < elemPerBlock;
+
+  if (isActiveThread) {
 
     // Now the main quadrature loop
-    for (int quadPtXInd = 0; quadPtXInd < (order + 1); quadPtXInd++) {
-      const double quadPtXWeight = getGaussQuadWeight<order>(quadPtXInd);
-      const double quadPtXCoord = getGaussQuadCoord<order>(quadPtXInd);
-      for (int quadPtYInd = 0; quadPtYInd < (order + 1); quadPtYInd++) {
-        const double quadPtYWeight = getGaussQuadWeight<order>(quadPtYInd);
-        const double quadPtYCoord = getGaussQuadCoord<order>(quadPtYInd);
-        const double quadPtWeight = quadPtXWeight * quadPtYWeight;
-        const double quadPtXi[2] = {quadPtXCoord, quadPtYCoord};
+    const int quadPtXInd = quadPtInd % (order + 1);
+    const int quadPtYInd = quadPtInd / (order + 1);
+    const double quadPtWeight = getGaussQuadWeight<order>(quadPtXInd) * getGaussQuadWeight<order>(quadPtYInd);
+    const double quadPtXi[2] = {getGaussQuadCoord<order>(quadPtXInd), getGaussQuadCoord<order>(quadPtYInd)};
 
-        // Compute Jacobian, J = dx/dxi
-        A2D::Mat<double, numDim, numDim> J, JInv;
-        interpParamGradient<order, numDim, numDim>(quadPtXi, localNodeCoords, J);
+    // Compute Jacobian, J = dx/dxi
+    A2D::Mat<double, numDim, numDim> J, JInv;
+    interpParamGradient<order, numDim, numDim>(quadPtXi, localNodeCoords[localElementInd], J);
 
-        // --- Compute J^-1 and detJ ---
-        A2D::MatInv(J, JInv);
-        double detJ;
-        A2D::MatDet(J, detJ);
+#ifndef NDEBUG
+    printf("assemblePlaneStressResidualKernel: Finished interpParamGradient\n");
+#endif
 
-        // --- Compute state gradient in physical space ---
-        A2D::Mat<double, numStates, numDim> dudx;
-        interpRealGradient<order, numDim, numDim>(quadPtXi, localNodeStates, JInv, dudx);
+    // --- Compute J^-1 and detJ ---
+    A2D::MatInv(J, JInv);
+    double detJ;
+    A2D::MatDet(J, detJ);
 
-        // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight and
-        // detJ)
-        A2D::Mat<double, numStates, numDim> weakRes;
-        planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeight * detJ, weakRes);
+    // --- Compute state gradient in physical space ---
+    A2D::Mat<double, numStates, numDim> dudx;
+    interpRealGradient<order, numDim, numDim>(quadPtXi, localNodeStates[localElementInd], JInv, dudx);
 
-        // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
-        addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakRes, JInv, localRes);
-      }
-    }
-    // --- Scatter local residual back to global array---
-    scatterResidual(connPtr, conn, elementInd, localRes, residual);
+#ifndef NDEBUG
+    printf("assemblePlaneStressResidualKernel: Finished interpRealGradient\n");
+#endif
+
+    // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight and
+    // detJ)
+    A2D::Mat<double, numStates, numDim> weakRes;
+    planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeight * detJ, weakRes);
+
+#ifndef NDEBUG
+    printf("assemblePlaneStressResidualKernel: Finished planeStressWeakRes\n");
+#endif
+
+    // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
+    addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakRes, JInv, localRes[localElementInd]);
+
+#ifndef NDEBUG
+    printf("assemblePlaneStressResidualKernel: Finished addTransformStateGradSens\n");
+#endif
   }
+  __syncthreads();
+  // --- Scatter local residual back to global array---
+  scatterElementNodalValues<elemPerBlock, numNodes, numStates>(connPtr,
+                                                               conn,
+                                                               localThreadInd,
+                                                               blockSize,
+                                                               blockIdx.x * elemPerBlock,
+                                                               localRes,
+                                                               residual);
+
+#ifndef NDEBUG
+  printf("assemblePlaneStressResidualKernel: Finished scatterElementNodalValues\n");
+#endif
 }
 
 template <int order, int numStates, int numDim, A2D::GreenStrainType strainType = A2D::GreenStrainType::LINEAR>
@@ -533,143 +676,148 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
                                                   int *bcsrMap,
                                                   double *const residual,
                                                   double *const matEntries) {
-  constexpr int numNodes = (order + 1) * (order + 1);
+  //   constexpr int numNodes = (order + 1) * (order + 1);
 
-  // One element per thread
-  const int elementInd = blockIdx.x * blockDim.x + threadIdx.x;
-  if (elementInd < numElements) {
-    // Get the element nodal states and coordinates
-    A2D::Mat<double, numNodes, numStates> localNodeStates;
-    A2D::Mat<double, numNodes, numDim> localNodeCoords;
-    gatherElementData<numNodes, numStates, numDim>(connPtr,
-                                                   conn,
-                                                   elementInd,
-                                                   states,
-                                                   nodeCoords,
-                                                   localNodeStates,
-                                                   localNodeCoords);
+  //   // One element per thread
+  //   const int elementInd = blockIdx.x * blockDim.x + threadIdx.x;
+  //   if (elementInd < numElements) {
+  //     // Get the element nodal states and coordinates
+  //     A2D::Mat<double, numNodes, numStates> localNodeStates;
+  //     A2D::Mat<double, numNodes, numDim> localNodeCoords;
+  //     gatherElementData<numNodes, numStates, numDim>(connPtr,
+  //                                                    conn,
+  //                                                    elementInd,
+  //                                                    states,
+  //                                                    nodeCoords,
+  //                                                    localNodeStates,
+  //                                                    localNodeCoords);
 
-    A2D::Mat<double, numNodes, numStates> localRes;
-    const int numDOF = numNodes * numStates;
-    A2D::Mat<double, numDOF, numDOF> localMat;
+  //     A2D::Mat<double, numNodes, numStates> localRes;
+  //     const int numDOF = numNodes * numStates;
+  //     A2D::Mat<double, numDOF, numDOF> localMat;
 
-    // Now the main quadrature loop
-    for (int quadPtXInd = 0; quadPtXInd < (order + 1); quadPtXInd++) {
-      const double quadPtXWeight = getGaussQuadWeight<order>(quadPtXInd);
-      const double quadPtXCoord = getGaussQuadCoord<order>(quadPtXInd);
-      for (int quadPtYInd = 0; quadPtYInd < (order + 1); quadPtYInd++) {
-        const double quadPtYWeight = getGaussQuadWeight<order>(quadPtYInd);
-        const double quadPtYCoord = getGaussQuadCoord<order>(quadPtYInd);
-        const double quadPtWeight = quadPtXWeight * quadPtYWeight;
-        const double quadPtXi[2] = {quadPtXCoord, quadPtYCoord};
+  //     // Now the main quadrature loop
+  //     for (int quadPtXInd = 0; quadPtXInd < (order + 1); quadPtXInd++) {
+  //       const double quadPtXWeight = getGaussQuadWeight<order>(quadPtXInd);
+  //       const double quadPtXCoord = getGaussQuadCoord<order>(quadPtXInd);
+  //       for (int quadPtYInd = 0; quadPtYInd < (order + 1); quadPtYInd++) {
+  //         const double quadPtYWeight = getGaussQuadWeight<order>(quadPtYInd);
+  //         const double quadPtYCoord = getGaussQuadCoord<order>(quadPtYInd);
+  //         const double quadPtWeight = quadPtXWeight * quadPtYWeight;
+  //         const double quadPtXi[2] = {quadPtXCoord, quadPtYCoord};
 
-        // Compute Jacobian, J = dx/dxi
-        A2D::Mat<double, numDim, numDim> J, JInv;
-        interpParamGradient<order, numDim, numDim>(quadPtXi, localNodeCoords, J);
+  //         // Compute Jacobian, J = dx/dxi
+  //         A2D::Mat<double, numDim, numDim> J, JInv;
+  //         interpParamGradient<order, numDim, numDim>(quadPtXi, localNodeCoords, J);
 
-        // --- Compute J^-1 and detJ ---
-        A2D::MatInv(J, JInv);
-        double detJ;
-        A2D::MatDet(J, detJ);
+  //         // --- Compute J^-1 and detJ ---
+  //         A2D::MatInv(J, JInv);
+  //         double detJ;
+  //         A2D::MatDet(J, detJ);
 
-        // --- Compute state gradient in physical space ---
-        A2D::Mat<double, numStates, numDim> dudx;
-        interpRealGradient<order, numDim, numDim>(quadPtXi, localNodeStates, JInv, dudx);
+  //         // --- Compute state gradient in physical space ---
+  //         A2D::Mat<double, numStates, numDim> dudx;
+  //         interpRealGradient<order, numDim, numDim>(quadPtXi, localNodeStates, JInv, dudx);
 
-        // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight and
-        // detJ)
-        A2D::Mat<double, numStates, numDim> weakRes;
-        planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeight * detJ, weakRes);
+  //         // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight
+  //         and
+  //         // detJ)
+  //         A2D::Mat<double, numStates, numDim> weakRes;
+  //         planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeight * detJ, weakRes);
 
-        // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
-        addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakRes, JInv, localRes);
+  //         // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
+  //         addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakRes, JInv, localRes);
 
-        // We will compute the element Jac one column at a time, essentially doing a forward AD pass through the
-        // residual calculation
+  //         // We will compute the element Jac one column at a time, essentially doing a forward AD pass through the
+  //         // residual calculation
 
-        // Create a matrix of AD scalars that will store dudx and it's forward seed
-        A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> dudxFwd;
-        for (int ii = 0; ii < numStates; ii++) {
-          for (int jj = 0; jj < numDim; jj++) {
-            dudxFwd(ii, jj).value = dudx(ii, jj);
-          }
-        }
-        for (int nodeYInd = 0; nodeYInd < (order + 1); nodeYInd++) {
-          for (int nodeXInd = 0; nodeXInd < (order + 1); nodeXInd++) {
-            const int nodeInd = nodeYInd * (order + 1) + nodeXInd;
-            double N;
-            // Technically we should set a forward seed of 1 in q(nodeInd, stateInd) and 0 in all other entries, then
-            // propogate that seed through the state gradient interpolation, but because we are only seeding a single
-            // nodal state each round, we only need to use the basis function gradient for that node to propogate
-            // through the state gradient calculation
+  //         // Create a matrix of AD scalars that will store dudx and it's forward seed
+  //         A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> dudxFwd;
+  //         for (int ii = 0; ii < numStates; ii++) {
+  //           for (int jj = 0; jj < numDim; jj++) {
+  //             dudxFwd(ii, jj).value = dudx(ii, jj);
+  //           }
+  //         }
+  //         for (int nodeYInd = 0; nodeYInd < (order + 1); nodeYInd++) {
+  //           for (int nodeXInd = 0; nodeXInd < (order + 1); nodeXInd++) {
+  //             const int nodeInd = nodeYInd * (order + 1) + nodeXInd;
+  //             double N;
+  //             // Technically we should set a forward seed of 1 in q(nodeInd, stateInd) and 0 in all other entries,
+  //             then
+  //             // propogate that seed through the state gradient interpolation, but because we are only seeding a
+  //             single
+  //             // nodal state each round, we only need to use the basis function gradient for that node to propogate
+  //             // through the state gradient calculation
 
-            // Forward seed of dudxi is just dNdxi for this node
-            A2D::Mat<double, 1, numDim> dudxiDot, dudxDot;
-            lagrangePoly2dDeriv<double, order>(quadPtXi, nodeXInd, nodeYInd, N, dudxiDot.get_data());
-            // Now propogate through dudx = dudxi * J^-1
-            A2D::MatMatMult(dudxiDot, JInv, dudxDot);
-            for (int stateInd = 0; stateInd < numStates; stateInd++) {
-              // Now we will do a forward AD pass through the weak residual calculation by setting dudxDot as the seed
-              // in the state gradient
-              for (int ii = 0; ii < numStates; ii++) {
-                for (int jj = 0; jj < numDim; jj++) {
-                  dudxFwd(ii, jj).deriv[0] = 0.0;
-                }
-              }
-              for (int jj = 0; jj < numDim; jj++) {
-                dudxFwd(stateInd, jj).deriv[0] = dudxDot[jj];
-              }
+  //             // Forward seed of dudxi is just dNdxi for this node
+  //             A2D::Mat<double, 1, numDim> dudxiDot, dudxDot;
+  //             lagrangePoly2dDeriv<double, order>(quadPtXi, nodeXInd, nodeYInd, N, dudxiDot.get_data());
+  //             // Now propogate through dudx = dudxi * J^-1
+  //             A2D::MatMatMult(dudxiDot, JInv, dudxDot);
+  //             for (int stateInd = 0; stateInd < numStates; stateInd++) {
+  //               // Now we will do a forward AD pass through the weak residual calculation by setting dudxDot as the
+  //               seed
+  //               // in the state gradient
+  //               for (int ii = 0; ii < numStates; ii++) {
+  //                 for (int jj = 0; jj < numDim; jj++) {
+  //                   dudxFwd(ii, jj).deriv[0] = 0.0;
+  //                 }
+  //               }
+  //               for (int jj = 0; jj < numDim; jj++) {
+  //                 dudxFwd(stateInd, jj).deriv[0] = dudxDot[jj];
+  //               }
 
-              A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> weakResFwd;
-              planeStressWeakRes<strainType>(dudxFwd, E, nu, t, quadPtWeight * detJ, weakResFwd);
+  //               A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> weakResFwd;
+  //               planeStressWeakRes<strainType>(dudxFwd, E, nu, t, quadPtWeight * detJ, weakResFwd);
 
-              // Put the forward seed of the weak residual into it's own matrix
-              A2D::Mat<double, numStates, numDim> weakResDot;
-              for (int ii = 0; ii < numStates; ii++) {
-                for (int jj = 0; jj < numDim; jj++) {
-                  weakResDot(ii, jj) = weakResFwd(ii, jj).deriv[0];
-                }
-              }
+  //               // Put the forward seed of the weak residual into it's own matrix
+  //               A2D::Mat<double, numStates, numDim> weakResDot;
+  //               for (int ii = 0; ii < numStates; ii++) {
+  //                 for (int jj = 0; jj < numDim; jj++) {
+  //                   weakResDot(ii, jj) = weakResFwd(ii, jj).deriv[0];
+  //                 }
+  //               }
 
-              // Now propogate through the transformation of the state gradient sensitivity, this gives us this quad
-              // point's contribution to this column of the element jacobian
-              A2D::Mat<double, numNodes, numStates> matColContribution;
-              addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakResDot, JInv, matColContribution);
+  //               // Now propogate through the transformation of the state gradient sensitivity, this gives us this
+  //               quad
+  //               // point's contribution to this column of the element jacobian
+  //               A2D::Mat<double, numNodes, numStates> matColContribution;
+  //               addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakResDot, JInv, matColContribution);
 
-              // Add this column contribution to the element jacobian
-              const int colInd = nodeInd * numStates + stateInd;
-#ifndef NDEBUG
-              printf("QuadPt (%d, %d) contribution to column %d = ", quadPtXInd, quadPtYInd, colInd);
-              printMat(matColContribution);
-#endif
-              for (int ii = 0; ii < numNodes; ii++) {
-                for (int jj = 0; jj < numStates; jj++) {
-                  const int rowInd = ii * numStates + jj;
-                  localMat(rowInd, colInd) += matColContribution(ii, jj);
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-#ifndef NDEBUG
-    printf("Local element Jacobian = ");
-    printMat(localMat);
-#endif
-    // --- Scatter the local element Jacobian into the global matrix ---
-    scatterMat<numNodes, numStates>(connPtr,
-                                    conn,
-                                    elementInd,
-                                    &bcsrMap[elementInd * numNodes * numNodes],
-                                    localMat,
-                                    matEntries);
+  //               // Add this column contribution to the element jacobian
+  //               const int colInd = nodeInd * numStates + stateInd;
+  // #ifndef NDEBUG
+  //               printf("QuadPt (%d, %d) contribution to column %d = ", quadPtXInd, quadPtYInd, colInd);
+  //               printMat(matColContribution);
+  // #endif
+  //               for (int ii = 0; ii < numNodes; ii++) {
+  //                 for (int jj = 0; jj < numStates; jj++) {
+  //                   const int rowInd = ii * numStates + jj;
+  //                   localMat(rowInd, colInd) += matColContribution(ii, jj);
+  //                 }
+  //               }
+  //             }
+  //           }
+  //         }
+  //       }
+  //     }
+  // #ifndef NDEBUG
+  //     printf("Local element Jacobian = ");
+  //     printMat(localMat);
+  // #endif
+  //     // --- Scatter the local element Jacobian into the global matrix ---
+  //     scatterMat<numNodes, numStates>(connPtr,
+  //                                     conn,
+  //                                     elementInd,
+  //                                     &bcsrMap[elementInd * numNodes * numNodes],
+  //                                     localMat,
+  //                                     matEntries);
 
-    // --- Scatter local residual back to global array---
-    if (residual != nullptr) {
-      scatterResidual(connPtr, conn, elementInd, localRes, residual);
-    }
-  }
+  //     // --- Scatter local residual back to global array---
+  //     if (residual != nullptr) {
+  //       scatterResidual(connPtr, conn, elementInd, localRes, residual);
+  //     }
+  //   }
 }
 #endif
 
@@ -685,18 +833,36 @@ double runResidualKernel(const int elementOrder,
                          double *const residual) {
 #ifdef __CUDACC__
   // Figure out how many blocks and threads to use
-  const int threadsPerBlock = 4 * 32;
-  const int numBlocks = (numElements + threadsPerBlock - 1) / threadsPerBlock;
+  const int elemPerBlock = 4;
+  const int numQuadPoints = (elementOrder + 1) * (elementOrder + 1);
+  const int warpsPerBlock = (elemPerBlock * numQuadPoints + 32 - 1) / 32;
+  const int threadsPerBlock = 32 * warpsPerBlock;
+  const int numBlocks = (numElements + elemPerBlock - 1) / elemPerBlock;
+#ifndef NDEBUG
+  printf("For %d elements, launching %d blocks with %d threads each, %d elements per block\n",
+         numElements,
+         numBlocks,
+         threadsPerBlock,
+         elemPerBlock);
+#endif
 #endif
   auto t1 = std::chrono::high_resolution_clock::now();
 
 #ifdef __CUDACC__
 #define ASSEMBLE_PLANE_STRESS_RESIDUAL(elementOrder)                                                                   \
-  assemblePlaneStressResidualKernel<elementOrder, 2, 2>                                                                \
+  assemblePlaneStressResidualKernel<elementOrder, 2, 2, elemPerBlock>                                                  \
       <<<numBlocks, threadsPerBlock>>>(connPtr, conn, numElements, states, nodeCoords, E, nu, t, residual);
 #else
 #define ASSEMBLE_PLANE_STRESS_RESIDUAL(elementOrder)                                                                   \
-  assemblePlaneStressResidual<elementOrder, 2, 2>(connPtr, conn, numElements, states, nodeCoords, E, nu, t, residual);
+  assemblePlaneStressResidual<elementOrder, 2, 2, elemPerBlock>(connPtr,                                               \
+                                                                conn,                                                  \
+                                                                numElements,                                           \
+                                                                states,                                                \
+                                                                nodeCoords,                                            \
+                                                                E,                                                     \
+                                                                nu,                                                    \
+                                                                t,                                                     \
+                                                                residual);
 #endif
 
   switch (elementOrder) {

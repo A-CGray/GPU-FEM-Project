@@ -237,36 +237,36 @@ int main(int argc, char *argv[]) {
       resTime =
           runResidualKernel(elementOrder, d_connPtr, d_conn, numElements, d_disp, d_xPts2d, E, nu, t, d_kernelRes);
 
-      cudaMemset(d_matEntries, 0, matDataLength * sizeof(double));
-      jacTime = runJacobianKernel(elementOrder,
-                                  d_connPtr,
-                                  d_conn,
-                                  numElements,
-                                  d_disp,
-                                  d_xPts2d,
-                                  E,
-                                  nu,
-                                  t,
-                                  d_elementBCSRMap,
-                                  nullptr,
-                                  d_matEntries);
+      // cudaMemset(d_matEntries, 0, matDataLength * sizeof(double));
+      // jacTime = runJacobianKernel(elementOrder,
+      //                             d_connPtr,
+      //                             d_conn,
+      //                             numElements,
+      //                             d_disp,
+      //                             d_xPts2d,
+      //                             E,
+      //                             nu,
+      //                             t,
+      //                             d_elementBCSRMap,
+      //                             nullptr,
+      //                             d_matEntries);
 #else
       memset(kernelRes, 0, numNodes * 2 * sizeof(double));
       resTime = runResidualKernel(elementOrder, connPtr, conn, numElements, disp, xPts2d, E, nu, t, kernelRes);
 
-      mat->zeroEntries();
-      jacTime = runJacobianKernel(elementOrder,
-                                  connPtr,
-                                  conn,
-                                  numElements,
-                                  disp,
-                                  xPts2d,
-                                  E,
-                                  nu,
-                                  t,
-                                  elementBCSRMap,
-                                  nullptr,
-                                  jacData->A);
+      // mat->zeroEntries();
+      // jacTime = runJacobianKernel(elementOrder,
+      //                             connPtr,
+      //                             conn,
+      //                             numElements,
+      //                             disp,
+      //                             xPts2d,
+      //                             E,
+      //                             nu,
+      //                             t,
+      //                             elementBCSRMap,
+      //                             nullptr,
+      //                             jacData->A);
 #endif
       std::chrono::duration<double> tmp = std::chrono::high_resolution_clock::now() - timingLoopStart;
       const double totalRunTime = tmp.count();
