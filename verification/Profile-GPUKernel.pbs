@@ -13,7 +13,7 @@
 projectDir=/nobackup/achris10/GPU-FEM-Project
 meshDir=$projectDir/meshes
 
-outputDir=$projectDir/Baseline
+outputDir=$projectDir/Baseline-RecomputeBasis
 mkdir -p $outputDir
 
 make clean
@@ -21,7 +21,7 @@ make &> $outputDir/Profile-GPUKernel.out
 
 for meshFile in $meshDir/*.bdf; do
     echo Running with mesh file: $meshFile &>> $outputDir/Profile-GPUKernel.out
-    ./RunTACS.exe $meshFile &>> $outputDir/Profile-GPUKernel.out
+    ./TestKernels.exe $meshFile &>> $outputDir/Profile-GPUKernel.out
 
     if [[ $? != 0 ]]; then
         echo "Opening ${meshFile} failed"
@@ -44,5 +44,5 @@ declare -a profileFiles=("Square-Order1-495296Elements-993026DOF" "Square-Order2
 for f in "${profileFiles[@]}"
 do
    meshFile=$meshDir/$f.bdf
-   ncu -f --set full -o $outputDir/$f ./RunTACS.exe $meshFile &>> $outputDir/Profile-GPUKernel.out
+   ncu -f --set full -o $outputDir/$f ./TestKernels.exe $meshFile &>> $outputDir/Profile-GPUKernel.out
 done

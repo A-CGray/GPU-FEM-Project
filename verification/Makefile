@@ -8,7 +8,7 @@ ifeq ($(DEBUG), true)
 endif
 
 obj = TACSHelpers.o
-exe = RunTACS.exe
+exe = TestKernels.exe
 
 LD_FLAGS := ${TACS_LD_FLAGS}
 INCLUDE_FLAGS := $(A2D_INCLUDE) $(GPU_MACRO_INCLUDE) ${TACS_INCLUDE}
@@ -23,13 +23,7 @@ endif
 .PRECIOUS: $(obj)
 
 # Add header dependencies
-deps = TACSHelpers.h ../element/FEKernels.h
-
-# Dump the above to make sure there weren't any errors so far:
-# $(info CXX = $(CXX))
-# $(info CXXFLAGS = $(CXXFLAGS))
-# $(info INCLUDE_FLAGS = $(INCLUDE_FLAGS))
-# $(info LD_FLAGS = $(LD_FLAGS))
+deps = TACSHelpers.h ../element/FEKernels.h ../element/LagrangeShapeFuncs.h ../element/GaussQuadrature.h
 
 .PHONY: default
 default: $(exe)

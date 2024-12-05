@@ -1,6 +1,8 @@
 #pragma once
 
 #include "GPUMacros.h"
+#include "GaussQuadrature.h"
+#include "LagrangeShapeFuncs.h"
 #include "a2dcore.h"
 #include "adscalar.h"
 
@@ -98,11 +100,13 @@ __DEVICE__ void scatterMat(const int *const connPtr,
   }
 }
 
-template <int numNodes, int numVals, int numDim>
-__DEVICE__ void addTransformStateGradSens(const A2D::Mat<double, numVals, numDim> stateGradSens,
+template <int order, int numVals, int numDim>
+__DEVICE__ void addTransformStateGradSens(const double xi[numDim],
+                                          const A2D::Mat<double, numVals, numDim> stateGradSens,
                                           const A2D::Mat<double, numDim, numDim> JInv,
-                                          const A2D::Mat<double, numNodes, numDim> dNdxi,
-                                          A2D::Mat<double, numNodes, numVals> &nodalValSens) {
+                                          A2D::Mat<double, (order + 1) * (order + 1), numVals> &nodalValSens) {
+  constexpr int numNodes = (order + 1) * (order + 1);
+
   // dfdq = NPrimeParam * J^-1 * dfduPrime^T
 
   // Number of ops to compute (NPrimeParam * J^-1) * dfduPrime^T
@@ -124,11 +128,17 @@ __DEVICE__ void addTransformStateGradSens(const A2D::Mat<double, numVals, numDim
     // }
     // --- Add NPrimeParam * temp ---
     // A2D doesn't have the ability to do in-place addition of a MatMat product so we'll just do it manually
-    for (int ii = 0; ii < numNodes; ii++) {
-      for (int jj = 0; jj < numVals; jj++) {
-        nodalValSens[ii * numVals + jj] = 0.0;
-        for (int kk = 0; kk < numDim; kk++) {
-          nodalValSens[ii * numVals + jj] += dNdxi[ii * numDim + kk] * temp[kk * numVals + jj];
+    for (int nodeYInd = 0; nodeYInd < (order + 1); nodeYInd++) {
+      for (int nodeXInd = 0; nodeXInd < (order + 1); nodeXInd++) {
+        const int nodeInd = nodeYInd * (order + 1) + nodeXInd;
+        double dNidxi[numDim], N;
+        lagrangePoly2dDeriv<double, order>(xi, nodeXInd, nodeYInd, N, dNidxi);
+
+        for (int jj = 0; jj < numVals; jj++) {
+          nodalValSens[nodeInd * numVals + jj] = 0.0;
+          for (int kk = 0; kk < numDim; kk++) {
+            nodalValSens[nodeInd * numVals + jj] += dNidxi[kk] * temp[kk * numVals + jj];
+          }
         }
       }
     }
@@ -136,15 +146,18 @@ __DEVICE__ void addTransformStateGradSens(const A2D::Mat<double, numVals, numDim
   else {
     // --- Compute (NPrimeParam * J^-1) ---
     A2D::Mat<double, numNodes, numDim> temp;
-    A2D::MatMatMult(dNdxi, JInv, temp);
-    // for (int ii = 0; ii < numNodes; ii++) {
-    //   for (int jj = 0; jj < numDim; jj++) {
-    //     temp[ii, jj] = 0.0;
-    //     for (int kk = 0; kk < numDim; kk++) {
-    //       temp[ii, jj] += dNdxi[ii * numDim + kk] * JInv[kk * numDim + jj];
-    //     }
-    //   }
-    // }
+    for (int nodeYInd = 0; nodeYInd < (order + 1); nodeYInd++) {
+      for (int nodeXInd = 0; nodeXInd < (order + 1); nodeXInd++) {
+        const int nodeInd = nodeYInd * (order + 1) + nodeXInd;
+        double dNidxi[numDim], N;
+        lagrangePoly2dDeriv<double, order>(xi, nodeXInd, nodeYInd, N, dNidxi);
+        for (int jj = 0; jj < numDim; jj++) {
+          for (int kk = 0; kk < numDim; kk++) {
+            temp(nodeInd, jj) += dNidxi[kk] * JInv(kk, jj); //[kk * numDim + jj];
+          }
+        }
+      }
+    }
     // --- Add temp * dfduPrime^T ---
     // A2D doesn't have the ability to do in-place addition of a MatMat product so we'll just do it manually
     for (int ii = 0; ii < numNodes; ii++) {
@@ -158,10 +171,24 @@ __DEVICE__ void addTransformStateGradSens(const A2D::Mat<double, numVals, numDim
 }
 
 // dudxi = localNodeValues^T * dNdxi
-template <int numNodes, int numVals, int numDim>
-__DEVICE__ void interpParamGradient(const A2D::Mat<double, numNodes, numVals> nodalValues,
-                                    const A2D::Mat<double, numNodes, numDim> dNdxi,
+template <int order, int numVals, int numDim>
+__DEVICE__ void interpParamGradient(const double xi[numDim],
+                                    const A2D::Mat<double, (order + 1) * (order + 1), numVals> nodalValues,
                                     A2D::Mat<double, numVals, numDim> &dudxi) {
+  dudxi.zero();
+  for (int nodeYInd = 0; nodeYInd < (order + 1); nodeYInd++) {
+    for (int nodeXInd = 0; nodeXInd < (order + 1); nodeXInd++) {
+      const int nodeInd = nodeYInd * (order + 1) + nodeXInd;
+      double dNidxi[numDim], N;
+      lagrangePoly2dDeriv<double, order>(xi, nodeXInd, nodeYInd, N, dNidxi);
+      for (int ii = 0; ii < numVals; ii++) {
+        for (int jj = 0; jj < numDim; jj++) {
+          dudxi[ii * numDim + jj] += nodalValues[nodeInd * numVals + ii] * dNidxi[jj];
+        }
+      }
+    }
+  }
+
   // for (int ii = 0; ii < numVals; ii++) {
   //   for (int jj = 0; jj < numDim; jj++) {
   //     dudxi[ii, jj] = 0.;
@@ -170,13 +197,13 @@ __DEVICE__ void interpParamGradient(const A2D::Mat<double, numNodes, numVals> no
   //     }
   //   }
   // }
-  A2D::MatMatMult<A2D::MatOp::TRANSPOSE, A2D::MatOp::NORMAL>(nodalValues, dNdxi, dudxi);
+  // A2D::MatMatMult<A2D::MatOp::TRANSPOSE, A2D::MatOp::NORMAL>(nodalValues, dNdxi, dudxi);
 }
 
 // dudx = localNodeValues^T * dNdxi * JInv
-template <int numNodes, int numVals, int numDim>
-__DEVICE__ void interpRealGradient(const A2D::Mat<double, numNodes, numVals> nodalValues,
-                                   const A2D::Mat<double, numNodes, numDim> dNdxi,
+template <int order, int numVals, int numDim>
+__DEVICE__ void interpRealGradient(const double xi[numDim],
+                                   const A2D::Mat<double, (order + 1) * (order + 1), numVals> nodalValues,
                                    const A2D::Mat<double, numDim, numDim> JInv,
                                    A2D::Mat<double, numVals, numDim> &dudx) {
   // dudxi = localNodeStates^T * dNdxi
@@ -186,7 +213,7 @@ __DEVICE__ void interpRealGradient(const A2D::Mat<double, numNodes, numVals> nod
 
   // dudxi = localNodeValues ^ T * dNdxi
   A2D::Mat<double, numVals, numDim> dudxi;
-  interpParamGradient<numNodes, numVals, numDim>(nodalValues, dNdxi, dudxi);
+  interpParamGradient<order, numVals, numDim>(xi, nodalValues, dudxi);
 
   // dudx = dudxi * J^-1
   // for (int ii = 0; ii < numVals; ii++) {
@@ -217,48 +244,31 @@ __DEVICE__ void planeStressWeakRes(const A2D::Mat<numType, 2, 2> uPrime,
   const double mu = 0.5 * E / (1.0 + nu);
   const double lambda = 2 * mu * nu / (1.0 - nu);
 
-  // auto stack = A2D::MakeStack(A2D::MatGreenStrain<strainType>(uPrimeMat, strain),
-  //                             SymIsotropic(mu, lambda, strain, stress),
-  //                             SymMatMultTrace(strain, stress, energy));
-
-  // --- A2D stacks don't currently work on the GPU so we'll try reversing through the stack manually ---
-  auto strainExpr = A2D::MatGreenStrain<strainType>(uPrimeMat, strain);
-  strainExpr.eval();
-  auto stressExpr = SymIsotropic(mu, lambda, strain, stress);
-  stressExpr.eval();
-  auto energyExpr = SymMatMultTrace(strain, stress, energy);
-  energyExpr.eval();
+  auto stack = A2D::MakeStack(A2D::MatGreenStrain<strainType>(uPrimeMat, strain),
+                              SymIsotropic(mu, lambda, strain, stress),
+                              SymMatMultTrace(strain, stress, energy));
 
   // Compute strain energy derivative w.r.t state gradient
   energy.bvalue() = 0.5 * scale * t; // Set the seed value (0.5 because energy = 0.5 * sigma : epsilon)
 
-  // stack.reverse();                   // Reverse mode AD through the stack
-
-  energyExpr.reverse(); // Manual reverse mode AD through the stack
-  stressExpr.reverse();
-  strainExpr.reverse();
+  stack.reverse(); // Reverse mode AD through the stack
 
   for (int ii = 0; ii < 4; ii++) {
     residual[ii] = uPrimeMat.bvalue()[ii];
   }
 }
 
-template <int numNodes,
-          int numStates,
-          int numQuadPts,
-          int numDim,
-          A2D::GreenStrainType strainType = A2D::GreenStrainType::LINEAR>
+template <int order, int numStates, int numDim, A2D::GreenStrainType strainType = A2D::GreenStrainType::LINEAR>
 void assemblePlaneStressResidual(const int *const connPtr,
                                  const int *const conn,
                                  const int numElements,
                                  const double *const states,
                                  const double *const nodeCoords,
-                                 const double *const quadPtWeights,
-                                 const double *const quadPointdNdxi,
                                  const double E,
                                  const double nu,
                                  const double t,
                                  double *const residual) {
+  constexpr int numNodes = (order + 1) * (order + 1);
 #pragma omp parallel for
   for (int elementInd = 0; elementInd < numElements; elementInd++) {
     // Get the element nodal states and coordinates
@@ -274,54 +284,55 @@ void assemblePlaneStressResidual(const int *const connPtr,
                                                    localNodeCoords);
 
     // Now the main quadrature loop
-    for (int quadPtInd = 0; quadPtInd < numQuadPts; quadPtInd++) {
-      // Put the quadrature point basis gradients into an A2D mat
-      A2D::Mat<double, numNodes, numDim> dNdxi(&quadPointdNdxi[quadPtInd * numNodes * numDim]);
+    for (int quadPtXInd = 0; quadPtXInd < (order + 1); quadPtXInd++) {
+      const double quadPtXWeight = getGaussQuadWeight<order>(quadPtXInd);
+      const double quadPtXCoord = getGaussQuadCoord<order>(quadPtXInd);
+      for (int quadPtYInd = 0; quadPtYInd < (order + 1); quadPtYInd++) {
+        const double quadPtYWeight = getGaussQuadWeight<order>(quadPtYInd);
+        const double quadPtYCoord = getGaussQuadCoord<order>(quadPtYInd);
+        const double quadPtWeight = quadPtXWeight * quadPtYWeight;
+        const double quadPtXi[2] = {quadPtXCoord, quadPtYCoord};
 
-      // Compute Jacobian, J = dx/dxi
-      A2D::Mat<double, numDim, numDim> J, JInv;
-      interpParamGradient<numNodes, numDim, numDim>(localNodeCoords, dNdxi, J);
+        // Compute Jacobian, J = dx/dxi
+        A2D::Mat<double, numDim, numDim> J, JInv;
+        interpParamGradient<order, numDim, numDim>(quadPtXi, localNodeCoords, J);
 
-      // --- Compute J^-1 and detJ ---
-      A2D::MatInv(J, JInv);
-      double detJ;
-      A2D::MatDet(J, detJ);
+        // --- Compute J^-1 and detJ ---
+        A2D::MatInv(J, JInv);
+        double detJ;
+        A2D::MatDet(J, detJ);
 
-      // --- Compute state gradient in physical space ---
-      A2D::Mat<double, numStates, numDim> dudx;
-      interpRealGradient(localNodeStates, dNdxi, JInv, dudx);
+        // --- Compute state gradient in physical space ---
+        A2D::Mat<double, numStates, numDim> dudx;
+        interpRealGradient(quadPtXi, localNodeStates, JInv, dudx);
 
-      // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight and
-      // detJ)
-      A2D::Mat<double, numStates, numDim> weakRes;
-      planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeights[quadPtInd] * detJ, weakRes);
+        // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight and
+        // detJ)
+        A2D::Mat<double, numStates, numDim> weakRes;
+        planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeight * detJ, weakRes);
 
-      // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
-      addTransformStateGradSens<numNodes, numStates, numDim>(weakRes, JInv, dNdxi, localRes);
+        // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
+        addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakRes, JInv, localRes);
+      }
     }
     // --- Scatter local residual back to global array---
     scatterResidual(connPtr, conn, elementInd, localRes, residual);
   }
 }
 
-template <int numNodes,
-          int numStates,
-          int numQuadPts,
-          int numDim,
-          A2D::GreenStrainType strainType = A2D::GreenStrainType::LINEAR>
+template <int order, int numStates, int numDim, A2D::GreenStrainType strainType = A2D::GreenStrainType::LINEAR>
 void assemblePlaneStressJacobian(const int *const connPtr,
                                  const int *const conn,
                                  const int numElements,
                                  const double *const states,
                                  const double *const nodeCoords,
-                                 const double *const quadPtWeights,
-                                 const double *const quadPointdNdxi,
                                  const double E,
                                  const double nu,
                                  const double t,
                                  int *bcsrMap,
                                  double *const residual,
                                  double *const matEntries) {
+  constexpr int numNodes = (order + 1) * (order + 1);
 #pragma omp parallel for
   for (int elementInd = 0; elementInd < numElements; elementInd++) {
     // Get the element nodal states and coordinates
@@ -340,84 +351,91 @@ void assemblePlaneStressJacobian(const int *const connPtr,
     A2D::Mat<double, numDOF, numDOF> localMat;
 
     // Now the main quadrature loop
-    for (int quadPtInd = 0; quadPtInd < numQuadPts; quadPtInd++) {
+    for (int quadPtXInd = 0; quadPtXInd < (order + 1); quadPtXInd++) {
+      const double quadPtXWeight = getGaussQuadWeight<order>(quadPtXInd);
+      const double quadPtXCoord = getGaussQuadCoord<order>(quadPtXInd);
+      for (int quadPtYInd = 0; quadPtYInd < (order + 1); quadPtYInd++) {
+        const double quadPtYWeight = getGaussQuadWeight<order>(quadPtYInd);
+        const double quadPtYCoord = getGaussQuadCoord<order>(quadPtYInd);
+        const double quadPtWeight = quadPtXWeight * quadPtYWeight;
+        const double quadPtXi[2] = {quadPtXCoord, quadPtYCoord};
 
-      // Put the quadrature point basis gradients into an A2D mat
-      A2D::Mat<double, numNodes, numDim> dNdxi(&quadPointdNdxi[quadPtInd * numNodes * numDim]);
+        // Compute Jacobian, J = dx/dxi
+        A2D::Mat<double, numDim, numDim> J, JInv;
+        interpParamGradient<order, numDim, numDim>(quadPtXi, localNodeCoords, J);
 
-      // Compute Jacobian, J = dx/dxi
-      A2D::Mat<double, numDim, numDim> J, JInv;
-      interpParamGradient<numNodes, numDim, numDim>(localNodeCoords, dNdxi, J);
+        // --- Compute J^-1 and detJ ---
+        A2D::MatInv(J, JInv);
+        double detJ;
+        A2D::MatDet(J, detJ);
 
-      // --- Compute J^-1 and detJ ---
-      A2D::MatInv(J, JInv);
-      double detJ;
-      A2D::MatDet(J, detJ);
+        // --- Compute state gradient in physical space ---
+        A2D::Mat<double, numStates, numDim> dudx;
+        interpRealGradient(quadPtXi, localNodeStates, JInv, dudx);
 
-      // --- Compute state gradient in physical space ---
-      A2D::Mat<double, numStates, numDim> dudx;
-      interpRealGradient(localNodeStates, dNdxi, JInv, dudx);
+        // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight and
+        // detJ)
+        A2D::Mat<double, numStates, numDim> weakRes;
+        planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeight * detJ, weakRes);
 
-      // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight and
-      // detJ)
-      A2D::Mat<double, numStates, numDim> weakRes;
-      planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeights[quadPtInd] * detJ, weakRes);
+        // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
+        addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakRes, JInv, localRes);
 
-      // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
-      addTransformStateGradSens<numNodes, numStates, numDim>(weakRes, JInv, dNdxi, localRes);
+        // We will compute the element Jac one column at a time, essentially doing a forward AD pass through the
+        // residual calculation
 
-      // We will compute the element Jac one column at a time, essentially doing a forward AD pass through the residual
-      // calculation
-
-      // Create a matrix of AD scalars that will store dudx and it's forward seed
-      A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> dudxFwd;
-      for (int ii = 0; ii < numStates; ii++) {
-        for (int jj = 0; jj < numDim; jj++) {
-          dudxFwd(ii, jj).value = dudx(ii, jj);
-        }
-      }
-      for (int nodeInd = 0; nodeInd < numNodes; nodeInd++) {
-        // Technically we should set a forward seed of 1 in q(nodeInd, stateInd) and 0 in all other entries, then
-        // propogate that seed through the state gradient interpolation, but because we are only seeding a single
-        // nodal state each round, we only need to use the basis function gradient for that node to propogate through
-        // the state gradient calculation
-
-        // Forward seed of dudxi is just dNdxi for this node
-        A2D::Mat<double, 1, numDim> dudxiDot, dudxDot;
-        for (int ii = 0; ii < numDim; ii++) {
-          dudxiDot[ii] = dNdxi(nodeInd, ii);
-        }
-        // Now propogate through dudx = dudxi * J^-1
-        A2D::MatMatMult(dudxiDot, JInv, dudxDot);
-        for (int stateInd = 0; stateInd < numStates; stateInd++) {
-          // Now we will do a forward AD pass through the weak residual calculation by setting dudxDot as the seed in
-          // the state gradient
-          dudxFwd.zero();
+        // Create a matrix of AD scalars that will store dudx and it's forward seed
+        A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> dudxFwd;
+        for (int ii = 0; ii < numStates; ii++) {
           for (int jj = 0; jj < numDim; jj++) {
-            dudxFwd(stateInd, jj).deriv[0] = dudxDot(stateInd, jj);
+            dudxFwd(ii, jj).value = dudx(ii, jj);
           }
-          A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> weakResFwd;
-          planeStressWeakRes<strainType>(dudxFwd, E, nu, t, quadPtWeights[quadPtInd] * detJ, weakResFwd);
+        }
+        for (int nodeYInd = 0; nodeYInd < (order + 1); nodeYInd++) {
+          for (int nodeXInd = 0; nodeXInd < (order + 1); nodeXInd++) {
+            const int nodeInd = nodeYInd * (order + 1) + nodeXInd;
+            double N;
+            // Technically we should set a forward seed of 1 in q(nodeInd, stateInd) and 0 in all other entries, then
+            // propogate that seed through the state gradient interpolation, but because we are only seeding a single
+            // nodal state each round, we only need to use the basis function gradient for that node to propogate
+            // through the state gradient calculation
 
-          // Put the forward seed of the weak residual into it's own matrix
-          A2D::Mat<double, numStates, numDim> weakResDot;
-          for (int ii = 0; ii < numStates; ii++) {
-            for (int jj = 0; jj < numDim; jj++) {
-              weakResDot(ii, jj) = weakResFwd(ii, jj).deriv[0];
-            }
-          }
+            // Forward seed of dudxi is just dNdxi for this node
+            A2D::Mat<double, 1, numDim> dudxiDot, dudxDot;
+            lagrangePoly2dDeriv<double, order>(quadPtXi, nodeXInd, nodeYInd, N, dudxiDot);
+            // Now propogate through dudx = dudxi * J^-1
+            A2D::MatMatMult(dudxiDot, JInv, dudxDot);
+            for (int stateInd = 0; stateInd < numStates; stateInd++) {
+              // Now we will do a forward AD pass through the weak residual calculation by setting dudxDot as the seed
+              // in the state gradient
+              dudxFwd.zero();
+              for (int jj = 0; jj < numDim; jj++) {
+                dudxFwd(stateInd, jj).deriv[0] = dudxDot(stateInd, jj);
+              }
+              A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> weakResFwd;
+              planeStressWeakRes<strainType>(dudxFwd, E, nu, t, quadPtWeight * detJ, weakResFwd);
 
-          // Now propogate through the transformation of the state gradient sensitivity, this gives us this quad point's
-          // contribution to this column of the element jacobian
-          A2D::Mat<double, numNodes, numStates> matColContribution;
-          addTransformStateGradSens<numNodes, numStates, numDim>(weakResDot, JInv, dNdxi, matColContribution);
+              // Put the forward seed of the weak residual into it's own matrix
+              A2D::Mat<double, numStates, numDim> weakResDot;
+              for (int ii = 0; ii < numStates; ii++) {
+                for (int jj = 0; jj < numDim; jj++) {
+                  weakResDot(ii, jj) = weakResFwd(ii, jj).deriv[0];
+                }
+              }
 
-          // Add this column contribution to the element jacobian
-          const int colInd = nodeInd * numStates + stateInd;
-          for (int ii = 0; ii < numNodes; ii++) {
-            for (int jj = 0; jj < numStates; jj++) {
-              const int rowInd = ii * numStates + jj;
-              localMat(colInd, rowInd) += matColContribution(ii, jj);
+              // Now propogate through the transformation of the state gradient sensitivity, this gives us this quad
+              // point's contribution to this column of the element jacobian
+              A2D::Mat<double, numNodes, numStates> matColContribution;
+              addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakResDot, JInv, matColContribution);
+
+              // Add this column contribution to the element jacobian
+              const int colInd = nodeInd * numStates + stateInd;
+              for (int ii = 0; ii < numNodes; ii++) {
+                for (int jj = 0; jj < numStates; jj++) {
+                  const int rowInd = ii * numStates + jj;
+                  localMat(colInd, rowInd) += matColContribution(ii, jj);
+                }
+              }
             }
           }
         }
@@ -438,24 +456,89 @@ void assemblePlaneStressJacobian(const int *const connPtr,
   }
 }
 
-template <int numNodes,
-          int numStates,
-          int numQuadPts,
-          int numDim,
-          A2D::GreenStrainType strainType = A2D::GreenStrainType::LINEAR>
+#ifdef __CUDACC__
+template <int order, int numStates, int numDim, A2D::GreenStrainType strainType = A2D::GreenStrainType::LINEAR>
+__global__ void assemblePlaneStressResidualKernel(const int *const connPtr,
+                                                  const int *const conn,
+                                                  const int numElements,
+                                                  const double *const states,
+                                                  const double *const nodeCoords,
+                                                  const double E,
+                                                  const double nu,
+                                                  const double t,
+                                                  double *const residual) {
+  constexpr int numNodes = (order + 1) * (order + 1);
+
+  // One element per thread
+  const int elementInd = blockIdx.x * blockDim.x + threadIdx.x;
+  if (elementInd < numElements) {
+    // printf("Running `assemblePlaneStressResidualKernel` element %d\n", elementInd);
+    // Get the element nodal states and coordinates
+    A2D::Mat<double, numNodes, numStates> localNodeStates;
+    A2D::Mat<double, numNodes, numDim> localNodeCoords;
+    A2D::Mat<double, numNodes, numStates> localRes;
+    gatherElementData<numNodes, numStates, numDim>(connPtr,
+                                                   conn,
+                                                   elementInd,
+                                                   states,
+                                                   nodeCoords,
+                                                   localNodeStates,
+                                                   localNodeCoords);
+
+    for (int ii = 0; ii < numNodes * numStates; ii++) {
+      localRes[ii] = 0.0;
+    }
+
+    // Now the main quadrature loop
+    for (int quadPtXInd = 0; quadPtXInd < (order + 1); quadPtXInd++) {
+      const double quadPtXWeight = getGaussQuadWeight<order>(quadPtXInd);
+      const double quadPtXCoord = getGaussQuadCoord<order>(quadPtXInd);
+      for (int quadPtYInd = 0; quadPtYInd < (order + 1); quadPtYInd++) {
+        const double quadPtYWeight = getGaussQuadWeight<order>(quadPtYInd);
+        const double quadPtYCoord = getGaussQuadCoord<order>(quadPtYInd);
+        const double quadPtWeight = quadPtXWeight * quadPtYWeight;
+        const double quadPtXi[2] = {quadPtXCoord, quadPtYCoord};
+
+        // Compute Jacobian, J = dx/dxi
+        A2D::Mat<double, numDim, numDim> J, JInv;
+        interpParamGradient<order, numDim, numDim>(quadPtXi, localNodeCoords, J);
+
+        // --- Compute J^-1 and detJ ---
+        A2D::MatInv(J, JInv);
+        double detJ;
+        A2D::MatDet(J, detJ);
+
+        // --- Compute state gradient in physical space ---
+        A2D::Mat<double, numStates, numDim> dudx;
+        interpRealGradient<order, numDim, numDim>(quadPtXi, localNodeStates, JInv, dudx);
+
+        // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight and
+        // detJ)
+        A2D::Mat<double, numStates, numDim> weakRes;
+        planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeight * detJ, weakRes);
+
+        // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
+        addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakRes, JInv, localRes);
+      }
+    }
+    // --- Scatter local residual back to global array---
+    scatterResidual(connPtr, conn, elementInd, localRes, residual);
+  }
+}
+
+template <int order, int numStates, int numDim, A2D::GreenStrainType strainType = A2D::GreenStrainType::LINEAR>
 __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
                                                   const int *const conn,
                                                   const int numElements,
                                                   const double *const states,
                                                   const double *const nodeCoords,
-                                                  const double *const quadPtWeights,
-                                                  const double *const quadPointdNdxi,
                                                   const double E,
                                                   const double nu,
                                                   const double t,
                                                   int *bcsrMap,
                                                   double *const residual,
                                                   double *const matEntries) {
+  constexpr int numNodes = (order + 1) * (order + 1);
 
   // One element per thread
   const int elementInd = blockIdx.x * blockDim.x + threadIdx.x;
@@ -476,87 +559,100 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
     A2D::Mat<double, numDOF, numDOF> localMat;
 
     // Now the main quadrature loop
-    for (int quadPtInd = 0; quadPtInd < numQuadPts; quadPtInd++) {
-#ifndef NDEBUG
-      printf("Running `assemblePlaneStressJacobianKernel` element %d\n", elementInd);
-#endif
+    for (int quadPtXInd = 0; quadPtXInd < (order + 1); quadPtXInd++) {
+      const double quadPtXWeight = getGaussQuadWeight<order>(quadPtXInd);
+      const double quadPtXCoord = getGaussQuadCoord<order>(quadPtXInd);
+      for (int quadPtYInd = 0; quadPtYInd < (order + 1); quadPtYInd++) {
+        const double quadPtYWeight = getGaussQuadWeight<order>(quadPtYInd);
+        const double quadPtYCoord = getGaussQuadCoord<order>(quadPtYInd);
+        const double quadPtWeight = quadPtXWeight * quadPtYWeight;
+        const double quadPtXi[2] = {quadPtXCoord, quadPtYCoord};
 
-      // Put the quadrature point basis gradients into an A2D mat
-      A2D::Mat<double, numNodes, numDim> dNdxi(&quadPointdNdxi[quadPtInd * numNodes * numDim]);
+        // Compute Jacobian, J = dx/dxi
+        A2D::Mat<double, numDim, numDim> J, JInv;
+        interpParamGradient<order, numDim, numDim>(quadPtXi, localNodeCoords, J);
 
-      // Compute Jacobian, J = dx/dxi
-      A2D::Mat<double, numDim, numDim> J, JInv;
-      interpParamGradient<numNodes, numDim, numDim>(localNodeCoords, dNdxi, J);
+        // --- Compute J^-1 and detJ ---
+        A2D::MatInv(J, JInv);
+        double detJ;
+        A2D::MatDet(J, detJ);
 
-      // --- Compute J^-1 and detJ ---
-      A2D::MatInv(J, JInv);
-      double detJ;
-      A2D::MatDet(J, detJ);
+        // --- Compute state gradient in physical space ---
+        A2D::Mat<double, numStates, numDim> dudx;
+        interpRealGradient<order, numDim, numDim>(quadPtXi, localNodeStates, JInv, dudx);
 
-      // --- Compute state gradient in physical space ---
-      A2D::Mat<double, numStates, numDim> dudx;
-      interpRealGradient(localNodeStates, dNdxi, JInv, dudx);
+        // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight and
+        // detJ)
+        A2D::Mat<double, numStates, numDim> weakRes;
+        planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeight * detJ, weakRes);
 
-      // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight and
-      // detJ)
-      A2D::Mat<double, numStates, numDim> weakRes;
-      planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeights[quadPtInd] * detJ, weakRes);
+        // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
+        addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakRes, JInv, localRes);
 
-      // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
-      addTransformStateGradSens<numNodes, numStates, numDim>(weakRes, JInv, dNdxi, localRes);
+        // We will compute the element Jac one column at a time, essentially doing a forward AD pass through the
+        // residual calculation
 
-      // We will compute the element Jac one column at a time, essentially doing a forward AD pass through the residual
-      // calculation
-
-      // Create a matrix of AD scalars that will store dudx and it's forward seed
-      A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> dudxFwd;
-      for (int ii = 0; ii < numStates; ii++) {
-        for (int jj = 0; jj < numDim; jj++) {
-          dudxFwd(ii, jj).value = dudx(ii, jj);
-        }
-      }
-      for (int nodeInd = 0; nodeInd < numNodes; nodeInd++) {
-        // Technically we should set a forward seed of 1 in q(nodeInd, stateInd) and 0 in all other entries, then
-        // propogate that seed through the state gradient interpolation, but because we are only seeding a single
-        // nodal state each round, we only need to use the basis function gradient for that node to propogate through
-        // the state gradient calculation
-
-        // Forward seed of dudxi is just dNdxi for this node
-        A2D::Mat<double, 1, numDim> dudxiDot, dudxDot;
-        for (int ii = 0; ii < numDim; ii++) {
-          dudxiDot[ii] = dNdxi(nodeInd, ii);
-        }
-        // Now propogate through dudx = dudxi * J^-1
-        A2D::MatMatMult(dudxiDot, JInv, dudxDot);
-        for (int stateInd = 0; stateInd < numStates; stateInd++) {
-          // Now we will do a forward AD pass through the weak residual calculation by setting dudxDot as the seed in
-          // the state gradient
-          dudxFwd.zero();
+        // Create a matrix of AD scalars that will store dudx and it's forward seed
+        A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> dudxFwd;
+        for (int ii = 0; ii < numStates; ii++) {
           for (int jj = 0; jj < numDim; jj++) {
-            dudxFwd(stateInd, jj).deriv[0] = dudxDot[jj];
+            dudxFwd(ii, jj).value = dudx(ii, jj);
           }
-          A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> weakResFwd;
-          planeStressWeakRes<strainType>(dudxFwd, E, nu, t, quadPtWeights[quadPtInd] * detJ, weakResFwd);
+        }
+        for (int nodeYInd = 0; nodeYInd < (order + 1); nodeYInd++) {
+          for (int nodeXInd = 0; nodeXInd < (order + 1); nodeXInd++) {
+            const int nodeInd = nodeYInd * (order + 1) + nodeXInd;
+            double N;
+            // Technically we should set a forward seed of 1 in q(nodeInd, stateInd) and 0 in all other entries, then
+            // propogate that seed through the state gradient interpolation, but because we are only seeding a single
+            // nodal state each round, we only need to use the basis function gradient for that node to propogate
+            // through the state gradient calculation
 
-          // Put the forward seed of the weak residual into it's own matrix
-          A2D::Mat<double, numStates, numDim> weakResDot;
-          for (int ii = 0; ii < numStates; ii++) {
-            for (int jj = 0; jj < numDim; jj++) {
-              weakResDot(ii, jj) = weakResFwd(ii, jj).deriv[0];
-            }
-          }
+            // Forward seed of dudxi is just dNdxi for this node
+            A2D::Mat<double, 1, numDim> dudxiDot, dudxDot;
+            lagrangePoly2dDeriv<double, order>(quadPtXi, nodeXInd, nodeYInd, N, dudxiDot.get_data());
+            // Now propogate through dudx = dudxi * J^-1
+            A2D::MatMatMult(dudxiDot, JInv, dudxDot);
+            for (int stateInd = 0; stateInd < numStates; stateInd++) {
+              // Now we will do a forward AD pass through the weak residual calculation by setting dudxDot as the seed
+              // in the state gradient
+              for (int ii = 0; ii < numStates; ii++) {
+                for (int jj = 0; jj < numDim; jj++) {
+                  dudxFwd(ii, jj).deriv[0] = 0.0;
+                }
+              }
+              for (int jj = 0; jj < numDim; jj++) {
+                dudxFwd(stateInd, jj).deriv[0] = dudxDot[jj];
+              }
 
-          // Now propogate through the transformation of the state gradient sensitivity, this gives us this quad point's
-          // contribution to this column of the element jacobian
-          A2D::Mat<double, numNodes, numStates> matColContribution;
-          addTransformStateGradSens<numNodes, numStates, numDim>(weakResDot, JInv, dNdxi, matColContribution);
+              A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> weakResFwd;
+              planeStressWeakRes<strainType>(dudxFwd, E, nu, t, quadPtWeight * detJ, weakResFwd);
 
-          // Add this column contribution to the element jacobian
-          const int colInd = nodeInd * numStates + stateInd;
-          for (int ii = 0; ii < numNodes; ii++) {
-            for (int jj = 0; jj < numStates; jj++) {
-              const int rowInd = ii * numStates + jj;
-              localMat(colInd, rowInd) += matColContribution(ii, jj);
+              // Put the forward seed of the weak residual into it's own matrix
+              A2D::Mat<double, numStates, numDim> weakResDot;
+              for (int ii = 0; ii < numStates; ii++) {
+                for (int jj = 0; jj < numDim; jj++) {
+                  weakResDot(ii, jj) = weakResFwd(ii, jj).deriv[0];
+                }
+              }
+
+              // Now propogate through the transformation of the state gradient sensitivity, this gives us this quad
+              // point's contribution to this column of the element jacobian
+              A2D::Mat<double, numNodes, numStates> matColContribution;
+              addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakResDot, JInv, matColContribution);
+
+              // Add this column contribution to the element jacobian
+              const int colInd = nodeInd * numStates + stateInd;
+#ifndef NDEBUG
+              printf("QuadPt (%d, %d) contribution to column %d = ", quadPtXInd, quadPtYInd, colInd);
+              printMat(matColContribution);
+#endif
+              for (int ii = 0; ii < numNodes; ii++) {
+                for (int jj = 0; jj < numStates; jj++) {
+                  const int rowInd = ii * numStates + jj;
+                  localMat(colInd, rowInd) += matColContribution(ii, jj);
+                }
+              }
             }
           }
         }
@@ -580,86 +676,14 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
     }
   }
 }
-
-#ifdef __CUDACC__
-template <int numNodes,
-          int numStates,
-          int numQuadPts,
-          int numDim,
-          A2D::GreenStrainType strainType = A2D::GreenStrainType::LINEAR>
-__GLOBAL__ void assemblePlaneStressResidualKernel(const int *const connPtr,
-                                                  const int *const conn,
-                                                  const int numElements,
-                                                  const double *const states,
-                                                  const double *const nodeCoords,
-                                                  const double *const quadPtWeights,
-                                                  const double *const quadPointdNdxi,
-                                                  const double E,
-                                                  const double nu,
-                                                  const double t,
-                                                  double *const residual) {
-
-  // One element per thread
-  const int elementInd = blockIdx.x * blockDim.x + threadIdx.x;
-  if (elementInd < numElements) {
-    // printf("Running `assemblePlaneStressResidualKernel` element %d\n", elementInd);
-    // Get the element nodal states and coordinates
-    A2D::Mat<double, numNodes, numStates> localNodeStates;
-    A2D::Mat<double, numNodes, numDim> localNodeCoords;
-    A2D::Mat<double, numNodes, numStates> localRes;
-    gatherElementData<numNodes, numStates, numDim>(connPtr,
-                                                   conn,
-                                                   elementInd,
-                                                   states,
-                                                   nodeCoords,
-                                                   localNodeStates,
-                                                   localNodeCoords);
-
-    for (int ii = 0; ii < numNodes * numStates; ii++) {
-      localRes[ii] = 0.0;
-    }
-
-    // Now the main quadrature loop
-    for (int quadPtInd = 0; quadPtInd < numQuadPts; quadPtInd++) {
-      // Put the quadrature point basis gradients into an A2D mat
-      A2D::Mat<double, numNodes, numDim> dNdxi(&quadPointdNdxi[quadPtInd * numNodes * numDim]);
-
-      // Compute Jacobian, J = dx/dxi
-      A2D::Mat<double, numDim, numDim> J, JInv;
-      interpParamGradient<numNodes, numDim, numDim>(localNodeCoords, dNdxi, J);
-
-      // --- Compute J^-1 and detJ ---
-      A2D::MatInv(J, JInv);
-      double detJ;
-      A2D::MatDet(J, detJ);
-
-      // --- Compute state gradient in physical space ---
-      // double dudx[numStates * numDim];
-      A2D::Mat<double, numStates, numDim> dudx;
-      interpRealGradient(localNodeStates, dNdxi, JInv, dudx);
-
-      // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight and
-      // detJ)
-      A2D::Mat<double, numDim, numDim> weakRes;
-      planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeights[quadPtInd] * detJ, weakRes);
-
-      // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
-      addTransformStateGradSens<numNodes, numStates, numDim>(weakRes, JInv, dNdxi, localRes);
-    }
-    // --- Scatter local residual back to global array---
-    scatterResidual(connPtr, conn, elementInd, localRes, residual);
-  }
-}
 #endif
 
-double runResidualKernel(const int numNodesPerElement,
+double runResidualKernel(const int elementOrder,
                          const int *const connPtr,
                          const int *const conn,
                          const int numElements,
                          const double *const states,
                          const double *const nodeCoords,
-                         const double *const quadPtWeights,
-                         const double *const quadPointdNdxi,
                          const double E,
                          const double nu,
                          const double t,
@@ -672,45 +696,26 @@ double runResidualKernel(const int numNodesPerElement,
   auto t1 = std::chrono::high_resolution_clock::now();
 
 #ifdef __CUDACC__
-#define ASSEMBLE_PLANE_STRESS_RESIDUAL(numNodes)                                                                       \
-  assemblePlaneStressResidualKernel<numNodes, 2, numNodes, 2><<<numBlocks, threadsPerBlock>>>(connPtr,                 \
-                                                                                              conn,                    \
-                                                                                              numElements,             \
-                                                                                              states,                  \
-                                                                                              nodeCoords,              \
-                                                                                              quadPtWeights,           \
-                                                                                              quadPointdNdxi,          \
-                                                                                              E,                       \
-                                                                                              nu,                      \
-                                                                                              t,                       \
-                                                                                              residual);
+#define ASSEMBLE_PLANE_STRESS_RESIDUAL(elementOrder)                                                                   \
+  assemblePlaneStressResidualKernel<elementOrder, 2, 2>                                                                \
+      <<<numBlocks, threadsPerBlock>>>(connPtr, conn, numElements, states, nodeCoords, E, nu, t, residual);
 #else
-#define ASSEMBLE_PLANE_STRESS_RESIDUAL(numNodes)                                                                       \
-  assemblePlaneStressResidual<numNodes, 2, numNodes, 2>(connPtr,                                                       \
-                                                        conn,                                                          \
-                                                        numElements,                                                   \
-                                                        states,                                                        \
-                                                        nodeCoords,                                                    \
-                                                        quadPtWeights,                                                 \
-                                                        quadPointdNdxi,                                                \
-                                                        E,                                                             \
-                                                        nu,                                                            \
-                                                        t,                                                             \
-                                                        residual);
+#define ASSEMBLE_PLANE_STRESS_RESIDUAL(elementOrder)                                                                   \
+  assemblePlaneStressResidual<elementOrder, 2, 2>(connPtr, conn, numElements, states, nodeCoords, E, nu, t, residual);
 #endif
 
-  switch (numNodesPerElement) {
+  switch (elementOrder) {
+    case 1:
+      ASSEMBLE_PLANE_STRESS_RESIDUAL(1);
+      break;
+    case 2:
+      ASSEMBLE_PLANE_STRESS_RESIDUAL(2);
+      break;
+    case 3:
+      ASSEMBLE_PLANE_STRESS_RESIDUAL(3);
+      break;
     case 4:
       ASSEMBLE_PLANE_STRESS_RESIDUAL(4);
-      break;
-    case 9:
-      ASSEMBLE_PLANE_STRESS_RESIDUAL(9);
-      break;
-    case 16:
-      ASSEMBLE_PLANE_STRESS_RESIDUAL(16);
-      break;
-    case 25:
-      ASSEMBLE_PLANE_STRESS_RESIDUAL(25);
       break;
     default:
       break;
@@ -724,14 +729,12 @@ double runResidualKernel(const int numNodesPerElement,
   return tmp.count();
 }
 
-double runJacobianKernel(const int numNodesPerElement,
+double runJacobianKernel(const int elementOrder,
                          const int *const connPtr,
                          const int *const conn,
                          const int numElements,
                          const double *const states,
                          const double *const nodeCoords,
-                         const double *const quadPtWeights,
-                         const double *const quadPointdNdxi,
                          const double E,
                          const double nu,
                          const double t,
@@ -753,50 +756,46 @@ double runJacobianKernel(const int numNodesPerElement,
 
 // Helper macro so I don't have to write out all these inputs every time
 #ifdef __CUDACC__
-#define ASSEMBLE_PLANE_STRESS_JACOBIAN(numNodes)                                                                       \
-  assemblePlaneStressJacobianKernel<numNodes, 2, numNodes, 2><<<numBlocks, threadsPerBlock>>>(connPtr,                 \
-                                                                                              conn,                    \
-                                                                                              numElements,             \
-                                                                                              states,                  \
-                                                                                              nodeCoords,              \
-                                                                                              quadPtWeights,           \
-                                                                                              quadPointdNdxi,          \
-                                                                                              E,                       \
-                                                                                              nu,                      \
-                                                                                              t,                       \
-                                                                                              elementBCSRMap,          \
-                                                                                              residual,                \
-                                                                                              matEntries);
+#define ASSEMBLE_PLANE_STRESS_JACOBIAN(elementOrder)                                                                   \
+  assemblePlaneStressJacobianKernel<elementOrder, 2, 2><<<numBlocks, threadsPerBlock>>>(connPtr,                       \
+                                                                                        conn,                          \
+                                                                                        numElements,                   \
+                                                                                        states,                        \
+                                                                                        nodeCoords,                    \
+                                                                                        E,                             \
+                                                                                        nu,                            \
+                                                                                        t,                             \
+                                                                                        elementBCSRMap,                \
+                                                                                        residual,                      \
+                                                                                        matEntries);
 #else
-#define ASSEMBLE_PLANE_STRESS_JACOBIAN(numNodes)                                                                       \
-  assemblePlaneStressJacobian<numNodes, 2, numNodes, 2>(connPtr,                                                       \
-                                                        conn,                                                          \
-                                                        numElements,                                                   \
-                                                        states,                                                        \
-                                                        nodeCoords,                                                    \
-                                                        quadPtWeights,                                                 \
-                                                        quadPointdNdxi,                                                \
-                                                        E,                                                             \
-                                                        nu,                                                            \
-                                                        t,                                                             \
-                                                        elementBCSRMap,                                                \
-                                                        residual,                                                      \
-                                                        matEntries);
+#define ASSEMBLE_PLANE_STRESS_JACOBIAN(elementOrder)                                                                   \
+  assemblePlaneStressJacobian<elementOrder, 2, 2>(connPtr,                                                             \
+                                                  conn,                                                                \
+                                                  numElements,                                                         \
+                                                  states,                                                              \
+                                                  nodeCoords,                                                          \
+                                                  E,                                                                   \
+                                                  nu,                                                                  \
+                                                  t,                                                                   \
+                                                  elementBCSRMap,                                                      \
+                                                  residual,                                                            \
+                                                  matEntries);
 #endif
   // We need a switch statement here because the kernel is templated on the number of nodes, which we only
   // know at runtime
-  switch (numNodesPerElement) {
+  switch (elementOrder) {
+    case 1:
+      ASSEMBLE_PLANE_STRESS_JACOBIAN(1);
+      break;
+    case 2:
+      ASSEMBLE_PLANE_STRESS_JACOBIAN(2);
+      break;
+    case 3:
+      ASSEMBLE_PLANE_STRESS_JACOBIAN(3);
+      break;
     case 4:
       ASSEMBLE_PLANE_STRESS_JACOBIAN(4);
-      break;
-    case 9:
-      ASSEMBLE_PLANE_STRESS_JACOBIAN(9);
-      break;
-    case 16:
-      ASSEMBLE_PLANE_STRESS_JACOBIAN(16);
-      break;
-    case 25:
-      ASSEMBLE_PLANE_STRESS_JACOBIAN(25);
       break;
     default:
       break;

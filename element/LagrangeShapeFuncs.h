@@ -1,7 +1,13 @@
 #include "../GPUMacros.h"
 #include "adscalar.h"
+#include "math.h"
 
 #pragma once
+
+__HOST_AND_DEVICE__ constexpr double getCosinePoint(const int knotInd, const int order) {
+  const double xLinear = -1 + 2.0 * double(knotInd) / order;
+  return -cos(M_PI / 2 * (xLinear + 1));
+}
 
 /**
  * @brief Compute the value of the nth Lagrange polynomial at a given point x
@@ -15,9 +21,12 @@
 template <typename numType, int order>
 __HOST_AND_DEVICE__ inline numType lagrangePoly1d(const numType x, const int nodeInd) {
   numType result = 1.0;
-  const numType xj = -1 + 2.0 * nodeInd / order;
+  // const numType thetaj = M_PI / 2 * (2.0 * numType(nodeInd) / order);
+  const double xj = getCosinePoint(nodeInd, order);
   for (int ii = 0; ii < order + 1; ii++) {
-    const numType xi = -1 + 2.0 * ii / order;
+    // const numType xi = -1 + 2.0 * numType(ii) / order;
+    // const numType thetai = M_PI / 2 * (2.0 * numType(ii) / order);
+    const double xi = getCosinePoint(ii, order);
     if (ii != nodeInd) {
       result *= (x - xi) / (xj - xi);
     }
@@ -60,10 +69,10 @@ template <>
 __HOST_AND_DEVICE__ inline double lagrangePoly1d<double, 3>(const double x, const int nodeInd) {
   // Precomputed coefficients for each basis function
   static const double coeffs[4][4] = {
-      {-0.5625, 0.5625, 0.0625, -0.0625}, // N0
-      {1.6875, -0.5625, -1.6875, 0.5625}, // N1
-      {-1.6875, -0.5625, 1.6875, 0.5625}, // N2
-      {0.5625, 0.5625, -0.0625, -0.0625}  // N3
+      {-2.0 / 3.0, 2.0 / 3.0, 1.0 / 6.0, -1.0 / 6.0}, // N0
+      {4.0 / 3.0, -2.0 / 3.0, -4.0 / 3.0, 2.0 / 3.0}, // N1
+      {-4.0 / 3.0, -2.0 / 3.0, 4.0 / 3.0, 2.0 / 3.0}, // N2
+      {2.0 / 3.0, 2.0 / 3.0, -1.0 / 6.0, -1.0 / 6.0}  // N3
   };
 
   // Get coefficients for this node
@@ -80,11 +89,11 @@ template <>
 __HOST_AND_DEVICE__ inline double lagrangePoly1d<double, 4>(const double x, const int nodeInd) {
   // Precomputed coefficients for each basis function
   static const double coeffs[5][5] = {
-      {2.0 / 3.0, -2.0 / 3.0, -1.0 / 6.0, 1.0 / 6.0, 0.0}, // N0
-      {-8.0 / 3.0, 4.0 / 3.0, 8.0 / 3.0, -4.0 / 3.0, 0.0}, // N1
-      {4.0, 0.0, -5.0, 0.0, 1.0},                          // N2
-      {-8.0 / 3.0, -4.0 / 3.0, 8.0 / 3.0, 4.0 / 3.0, 0.0}, // N3
-      {2.0 / 3.0, 2.0 / 3.0, -1.0 / 6.0, -1.0 / 6.0, 0.0}  // N4
+      {1.0, -1.0, -0.5, 0.5, 0.0},                           // N0
+      {-2.0, 1.41421356237310, 2.0, -1.41421356237310, 0.0}, // N1
+      {2.0, 0.0, -3., 0.0, 1.0},                             // N2
+      {-2.0, -1.41421356237310, 2.0, 1.41421356237310, 0.0}, // N3
+      {1.0, 1.0, -0.5, -0.5, 0.0}                            // N4
   };
 
   // Get coefficients for this node
@@ -161,10 +170,10 @@ __HOST_AND_DEVICE__ inline void
 lagrangePoly1dDeriv<double, 3>(const double x, const int nodeInd, double &N, double &dNdx) {
   // Precomputed coefficients for each basis function
   static const double coeffs[4][4] = {
-      {-0.5625, 0.5625, 0.0625, -0.0625}, // N0
-      {1.6875, -0.5625, -1.6875, 0.5625}, // N1
-      {-1.6875, -0.5625, 1.6875, 0.5625}, // N2
-      {0.5625, 0.5625, -0.0625, -0.0625}  // N3
+      {-2.0 / 3.0, 2.0 / 3.0, 1.0 / 6.0, -1.0 / 6.0}, // N0
+      {4.0 / 3.0, -2.0 / 3.0, -4.0 / 3.0, 2.0 / 3.0}, // N1
+      {-4.0 / 3.0, -2.0 / 3.0, 4.0 / 3.0, 2.0 / 3.0}, // N2
+      {2.0 / 3.0, 2.0 / 3.0, -1.0 / 6.0, -1.0 / 6.0}  // N3
   };
 
   // Get coefficients for this node
@@ -185,11 +194,11 @@ __HOST_AND_DEVICE__ inline void
 lagrangePoly1dDeriv<double, 4>(const double x, const int nodeInd, double &N, double &dNdx) {
   // Precomputed coefficients for each basis function
   static const double coeffs[5][5] = {
-      {2.0 / 3.0, -2.0 / 3.0, -1.0 / 6.0, 1.0 / 6.0, 0.0}, // N0
-      {-8.0 / 3.0, 4.0 / 3.0, 8.0 / 3.0, -4.0 / 3.0, 0.0}, // N1
-      {4.0, 0.0, -5.0, 0.0, 1.0},                          // N2
-      {-8.0 / 3.0, -4.0 / 3.0, 8.0 / 3.0, 4.0 / 3.0, 0.0}, // N3
-      {2.0 / 3.0, 2.0 / 3.0, -1.0 / 6.0, -1.0 / 6.0, 0.0}  // N4
+      {1.0, -1.0, -0.5, 0.5, 0.0},                           // N0
+      {-2.0, 1.41421356237310, 2.0, -1.41421356237310, 0.0}, // N1
+      {2.0, 0.0, -3., 0.0, 1.0},                             // N2
+      {-2.0, -1.41421356237310, 2.0, 1.41421356237310, 0.0}, // N3
+      {1.0, 1.0, -0.5, -0.5, 0.0}                            // N4
   };
 
   // Get coefficients for this node

@@ -26,7 +26,7 @@
 // =============================================================================
 // Global constant definitions
 // =============================================================================
-const int MAX_TIMING_LOOPS = 100;
+const int MAX_TIMING_LOOPS = 1000;
 const double MAX_TIME = 30;
 const int JAC_WRITE_SIZE_LIMIT = 1000;
 const int RES_WRITE_SIZE_LIMIT = 1000;
@@ -92,6 +92,7 @@ int main(int argc, char *argv[]) {
     const int numElements = assembler->getNumElements();
     const int numQuadPts = element->getNumQuadraturePoints();
     const int numNodesPerElement = element->getNumNodes();
+    const int elementOrder = sqrt(numNodesPerElement) - 1;
     const int *connPtr;
     const int *conn;
     assembler->getElementConnectivity(&connPtr, &conn);
@@ -185,20 +186,6 @@ int main(int argc, char *argv[]) {
     TacsScalar *disp;
     dispVec->getArray(&disp);
 
-    // Get data about the element
-    double *const quadPtWeights = new double[numQuadPts];
-    double *const quadPtN = new double[numQuadPts * numNodesPerElement];
-    // quadPointdNdxi is a numQuadPts x numNodesPerElement x 2 array
-    // quadPointdNdxi[i, j, k] is the kth component of the gradient (in parametric space) of the jth basis
-    // function at the ith integration point (dN_j/dx_k at gauss point i)
-    double *const quadPointdNdxi = new double[numQuadPts * numNodesPerElement * 2];
-
-    for (int ii = 0; ii < numQuadPts; ii++) {
-      double pt[3];
-      quadPtWeights[ii] = basis->getQuadraturePoint(ii, pt);
-      basis->computeBasisGradient(pt, &quadPtN[ii * numNodesPerElement], &quadPointdNdxi[ii * numNodesPerElement * 2]);
-    }
-
     // Create an array for the kernel computed residual then call it
     double *const kernelRes = new double[numNodes * 2];
     memset(kernelRes, 0, numNodes * 2 * sizeof(double));
@@ -221,17 +208,6 @@ int main(int argc, char *argv[]) {
     cudaMalloc(&d_xPts2d, 2 * numNodes * sizeof(double));
     cudaMemcpy(d_xPts2d, xPts2d, 2 * numNodes * sizeof(double), cudaMemcpyHostToDevice);
 
-    double *d_quadPtWeights;
-    cudaMalloc(&d_quadPtWeights, numQuadPts * sizeof(double));
-    cudaMemcpy(d_quadPtWeights, quadPtWeights, numQuadPts * sizeof(double), cudaMemcpyHostToDevice);
-
-    double *d_quadPointdNdxi;
-    cudaMalloc(&d_quadPointdNdxi, numQuadPts * numNodesPerElement * 2 * sizeof(double));
-    cudaMemcpy(d_quadPointdNdxi,
-               quadPointdNdxi,
-               numQuadPts * numNodesPerElement * 2 * sizeof(double),
-               cudaMemcpyHostToDevice);
-
     double *d_kernelRes;
     cudaMalloc(&d_kernelRes, numNodes * 2 * sizeof(double));
 
@@ -249,80 +225,61 @@ int main(int argc, char *argv[]) {
     // Run timing loop
     // ==============================================================================
     double residualRunTimes[MAX_TIMING_LOOPS], jacobianRunTimes[MAX_TIMING_LOOPS];
-    int numLoopsRun = 0;
+    int numLoopsRun = -1; // I'm assuming the first kernel launch has much higher latency, so we won't count the first
+                          // time round the timing loop
+    double jacTime, resTime;
 
     auto timingLoopStart = std::chrono::high_resolution_clock::now();
-    for (int timingRun = 0; timingRun < MAX_TIMING_LOOPS; timingRun++) {
+    for (int timingRun = 0; timingRun < MAX_TIMING_LOOPS + 1; timingRun++) {
 
 #ifdef __CUDACC__
       cudaMemset(d_kernelRes, 0, numNodes * 2 * sizeof(double));
-      residualRunTimes[numLoopsRun] = runResidualKernel(numNodesPerElement,
-                                                        d_connPtr,
-                                                        d_conn,
-                                                        numElements,
-                                                        d_disp,
-                                                        d_xPts2d,
-                                                        d_quadPtWeights,
-                                                        d_quadPointdNdxi,
-                                                        E,
-                                                        nu,
-                                                        t,
-                                                        d_kernelRes);
+      resTime =
+          runResidualKernel(elementOrder, d_connPtr, d_conn, numElements, d_disp, d_xPts2d, E, nu, t, d_kernelRes);
 
       cudaMemset(d_matEntries, 0, matDataLength * sizeof(double));
-      jacobianRunTimes[numLoopsRun] = runJacobianKernel(numNodesPerElement,
-                                                        d_connPtr,
-                                                        d_conn,
-                                                        numElements,
-                                                        d_disp,
-                                                        d_xPts2d,
-                                                        d_quadPtWeights,
-                                                        d_quadPointdNdxi,
-                                                        E,
-                                                        nu,
-                                                        t,
-                                                        d_elementBCSRMap,
-                                                        nullptr,
-                                                        d_matEntries);
+      jacTime = runJacobianKernel(elementOrder,
+                                  d_connPtr,
+                                  d_conn,
+                                  numElements,
+                                  d_disp,
+                                  d_xPts2d,
+                                  E,
+                                  nu,
+                                  t,
+                                  d_elementBCSRMap,
+                                  nullptr,
+                                  d_matEntries);
 #else
       memset(kernelRes, 0, numNodes * 2 * sizeof(double));
-      residualRunTimes[numLoopsRun] = runResidualKernel(numNodesPerElement,
-                                                        connPtr,
-                                                        conn,
-                                                        numElements,
-                                                        disp,
-                                                        xPts2d,
-                                                        quadPtWeights,
-                                                        quadPointdNdxi,
-                                                        E,
-                                                        nu,
-                                                        t,
-                                                        kernelRes);
+      resTime = runResidualKernel(elementOrder, connPtr, conn, numElements, disp, xPts2d, E, nu, t, kernelRes);
 
       mat->zeroEntries();
-      jacobianRunTimes[numLoopsRun] = runJacobianKernel(numNodesPerElement,
-                                                        connPtr,
-                                                        conn,
-                                                        numElements,
-                                                        disp,
-                                                        xPts2d,
-                                                        quadPtWeights,
-                                                        quadPointdNdxi,
-                                                        E,
-                                                        nu,
-                                                        t,
-                                                        elementBCSRMap,
-                                                        nullptr,
-                                                        jacData->A);
+      jacTime = runJacobianKernel(elementOrder,
+                                  connPtr,
+                                  conn,
+                                  numElements,
+                                  disp,
+                                  xPts2d,
+                                  E,
+                                  nu,
+                                  t,
+                                  elementBCSRMap,
+                                  nullptr,
+                                  jacData->A);
 #endif
-      numLoopsRun++;
       std::chrono::duration<double> tmp = std::chrono::high_resolution_clock::now() - timingLoopStart;
       const double totalRunTime = tmp.count();
-      printf("Timing run %4d: res time = %.11e s, jac time = %.11e, total time = %f\n",
-             numLoopsRun,
-             residualRunTimes[numLoopsRun - 1],
-             jacobianRunTimes[numLoopsRun - 1],
-             totalRunTime);
+      if (numLoopsRun >= 0) {
+        residualRunTimes[numLoopsRun] = resTime;
+        jacobianRunTimes[numLoopsRun] = jacTime;
+        printf("Timing run %4d: res time = %.11e s, jac time = %.11e, total time = %f\n",
+               numLoopsRun + 1,
+               residualRunTimes[numLoopsRun],
+               jacobianRunTimes[numLoopsRun],
+               totalRunTime);
+      }
+      numLoopsRun++;
       if (totalRunTime > MAX_TIME) {
         break;
       }
@@ -374,9 +331,6 @@ int main(int argc, char *argv[]) {
     writeArrayToFile(jacobianRunTimes, numLoopsRun, "JacobianTimings.csv");
 
     // Free memory
-    delete[] quadPtWeights;
-    delete[] quadPtN;
-    delete[] quadPointdNdxi;
     delete[] xPts2d;
     delete[] kernelRes;
     delete[] elementBCSRMap;
@@ -385,8 +339,6 @@ int main(int argc, char *argv[]) {
     cudaFree(d_conn);
     cudaFree(d_disp);
     cudaFree(d_xPts2d);
-    cudaFree(d_quadPtWeights);
-    cudaFree(d_quadPointdNdxi);
     cudaFree(d_kernelRes);
     cudaFree(d_elementBCSRMap);
 #endif
