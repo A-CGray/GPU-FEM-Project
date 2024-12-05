@@ -650,7 +650,7 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
               for (int ii = 0; ii < numNodes; ii++) {
                 for (int jj = 0; jj < numStates; jj++) {
                   const int rowInd = ii * numStates + jj;
-                  localMat(colInd, rowInd) += matColContribution(ii, jj);
+                  localMat(rowInd, colInd) += matColContribution(ii, jj);
                 }
               }
             }
