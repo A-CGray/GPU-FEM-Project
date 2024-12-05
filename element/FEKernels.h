@@ -134,14 +134,16 @@ __DEVICE__ void addTransformStateGradSens(const double xi[numDim],
         double dNidxi[numDim], N;
         lagrangePoly2dDeriv<double, order>(xi, nodeXInd, nodeYInd, N, dNidxi);
 
-        for (int kk = 0; kk < numDim; kk++) {
-          for (int jj = 0; jj < numVals; jj++) {
-#ifdef __CUDACC__
-            atomicAdd(&nodalValSens[nodeInd * numVals + jj], dNidxi[kk] * temp(kk, jj));
-#else
-            nodalValSens[nodeInd * numVals + jj] += dNidxi[kk] * temp(kk, jj);
-#endif
+        for (int jj = 0; jj < numVals; jj++) {
+          double sum = 0.0;
+          for (int kk = 0; kk < numDim; kk++) {
+            sum += dNidxi[kk] * temp(kk, jj);
           }
+#ifdef __CUDACC__
+          atomicAdd(&nodalValSens[nodeInd * numVals + jj], sum);
+#else
+          nodalValSens[nodeInd * numVals + jj] += sum;
+#endif
         }
       }
     }
@@ -165,14 +167,15 @@ __DEVICE__ void addTransformStateGradSens(const double xi[numDim],
     // A2D doesn't have the ability to do in-place addition of a MatMat product so we'll just do it manually
     for (int ii = 0; ii < numNodes; ii++) {
       for (int jj = 0; jj < numVals; jj++) {
+        double sum = 0.0;
         for (int kk = 0; kk < numDim; kk++) {
-
-#ifdef __CUDACC__
-          atomicAdd(&nodalValSens[ii * numVals + jj], temp(ii, kk) * stateGradSens(jj, kk));
-#else
-          nodalValSens[ii * numVals + jj] += temp(ii, kk) * stateGradSens(jj, kk);
-#endif
+          sum += temp(ii, kk) * stateGradSens(jj, kk);
         }
+#ifdef __CUDACC__
+        atomicAdd(&nodalValSens[ii * numVals + jj], sum);
+#else
+        nodalValSens[ii * numVals + jj] += sum;
+#endif
       }
     }
   }
