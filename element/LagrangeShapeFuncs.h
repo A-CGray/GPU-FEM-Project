@@ -251,18 +251,6 @@ lagrangePoly2dDeriv(const numType x[2], const int nodeXInd, const int nodeYInd, 
   deriv[1] = Nx * dNdy;
 }
 
-template <typename numType, int order>
-class Lagrange2DBasis {
-  public:
-    static const numType eval(const numType x[2], const int nodeXInd, const int nodeYInd) {
-      return lagrangePoly2d<numType, order>(x, nodeXInd, nodeYInd);
-    }
-
-    static const void evalDeriv(const numType x[2], const int nodeXInd, const int nodeYInd, numType deriv[2]) {
-      lagrangePoly2dDeriv<numType, order>(x, nodeXInd, nodeYInd, deriv);
-    }
-};
-
 // int main() {
 //   const int order = 1;
 //   const double x = 0.1234;

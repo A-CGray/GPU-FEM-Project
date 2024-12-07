@@ -13,7 +13,7 @@
 projectDir=/nobackup/achris10/GPU-FEM-Project
 meshDir=$projectDir/meshes
 
-outputDir=$projectDir/QuadPtParallel
+outputDir=$projectDir/MoreParallel
 mkdir -p $outputDir
 
 make clean

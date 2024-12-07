@@ -7,14 +7,19 @@
 #include "adscalar.h"
 
 template <typename T>
-__HOST_AND_DEVICE__ void printMat(const T mat) {
-  for (int ii = 0; ii < mat.nrows; ii++) {
+__HOST_AND_DEVICE__ void printMat(const T mat[], const int numRows, const int numCols) {
+  for (int ii = 0; ii < numRows; ii++) {
     printf("[");
-    for (int jj = 0; jj < mat.ncols; jj++) {
-      printf(" % f, ", mat(ii, jj));
+    for (int jj = 0; jj < numCols; jj++) {
+      printf(" % 11.7e, ", mat[ii * numCols + jj]);
     }
     printf("]\n");
   }
+}
+
+template <typename T, int N, int M>
+__HOST_AND_DEVICE__ void printMat(const A2D::Mat<T, N, M> mat) {
+  printMat(mat.get_data(), N, M);
 }
 
 template <int numNodes, int numStates, int numDim>
@@ -56,9 +61,7 @@ __DEVICE__ void scatterResidual(const int *const connPtr,
 }
 
 template <int numNodes, int numStates>
-__DEVICE__ void scatterMat(const int *const connPtr,
-                           const int *const conn,
-                           const int elementInd,
+__DEVICE__ void scatterMat(const int elementInd,
                            const int *const map,
                            A2D::Mat<double, numNodes * numStates, numNodes * numStates> localMat,
                            double *const matEntries) {
@@ -100,7 +103,7 @@ __DEVICE__ void scatterMat(const int *const connPtr,
   }
 }
 
-template <int order, int numVals, int numDim>
+template <int order, int numVals, int numDim, bool atomic = false>
 __DEVICE__ void addTransformStateGradSens(const double xi[numDim],
                                           const A2D::Mat<double, numVals, numDim> stateGradSens,
                                           const A2D::Mat<double, numDim, numDim> JInv,
@@ -139,11 +142,17 @@ __DEVICE__ void addTransformStateGradSens(const double xi[numDim],
           for (int kk = 0; kk < numDim; kk++) {
             sum += dNidxi[kk] * temp(kk, jj);
           }
+          if constexpr (atomic) {
 #ifdef __CUDACC__
-          atomicAdd(&nodalValSens[nodeInd * numVals + jj], sum);
+            atomicAdd(&nodalValSens[nodeInd * numVals + jj], sum);
 #else
-          nodalValSens[nodeInd * numVals + jj] += sum;
+#pragma omp atomic
+            nodalValSens[nodeInd * numVals + jj] += sum;
 #endif
+          }
+          else {
+            nodalValSens[nodeInd * numVals + jj] += sum;
+          }
         }
       }
     }
@@ -171,11 +180,17 @@ __DEVICE__ void addTransformStateGradSens(const double xi[numDim],
         for (int kk = 0; kk < numDim; kk++) {
           sum += temp(ii, kk) * stateGradSens(jj, kk);
         }
+        if constexpr (atomic) {
 #ifdef __CUDACC__
-        atomicAdd(&nodalValSens[ii * numVals + jj], sum);
+          atomicAdd(&nodalValSens[ii * numVals + jj], sum);
 #else
-        nodalValSens[ii * numVals + jj] += sum;
+#pragma omp atomic
+          nodalValSens[ii * numVals + jj] += sum;
 #endif
+        }
+        else {
+          nodalValSens[ii * numVals + jj] += sum;
+        }
       }
     }
   }
@@ -453,12 +468,7 @@ void assemblePlaneStressJacobian(const int *const connPtr,
       }
     }
     // --- Scatter the local element Jacobian into the global matrix ---
-    scatterMat<numNodes, numStates>(connPtr,
-                                    conn,
-                                    elementInd,
-                                    &bcsrMap[elementInd * numNodes * numNodes],
-                                    localMat,
-                                    matEntries);
+    scatterMat<numNodes, numStates>(elementInd, &bcsrMap[elementInd * numNodes * numNodes], localMat, matEntries);
 
     // --- Scatter local residual back to global array---
     if (residual != nullptr) {
@@ -467,18 +477,20 @@ void assemblePlaneStressJacobian(const int *const connPtr,
   }
 }
 
-#ifdef __CUDACC__
+// #ifdef __CUDACC__
 template <int numElements, int numNodes, int valsPerNode>
-__device__ void gatherElementNodalValues(const int *const connPtr,
-                                         const int *const conn,
-                                         const double *const globalData,
-                                         const int threadID,
-                                         const int blockSize,
-                                         const int firstElemGlobalInd,
-                                         double elemData[numElements][numNodes * valsPerNode]) {
+__device__ void
+gatherElementNodalValues(const int *const connPtr,
+                         const int *const conn,
+                         const double *const globalData,
+                         const int threadID,
+                         const int threadBlockSize,
+                         const int firstElemGlobalInd,
+                         const int elementsToLoad, // Need this in case out block goes past the last element
+                         double elemData[numElements][numNodes * valsPerNode]) {
   const int valsPerElem = numNodes * valsPerNode;
 
-  for (int ii = threadID; ii < numElements * valsPerElem; ii += blockSize) {
+  for (int ii = threadID; ii < elementsToLoad * valsPerElem; ii += threadBlockSize) {
     const int elemLoadInd = ii / valsPerElem; // Which element am I loading data for
     const int globalElemLoadInd =
         firstElemGlobalInd + elemLoadInd;                // What's the global index of the element I'm loading data for
@@ -504,16 +516,18 @@ __device__ void gatherElementNodalValues(const int *const connPtr,
 }
 
 template <int numElements, int numNodes, int valsPerNode>
-__device__ void scatterElementNodalValues(const int *const connPtr,
-                                          const int *const conn,
-                                          const int threadID,
-                                          const int blockSize,
-                                          const int firstElemGlobalInd,
-                                          const double elemData[numElements][numNodes * valsPerNode],
-                                          double *globalData) {
+__device__ void
+scatterElementNodalValues(const int *const connPtr,
+                          const int *const conn,
+                          const int threadID,
+                          const int threadBlockSize,
+                          const int firstElemGlobalInd,
+                          const int elementsToWrite, // Need this in case out block goes past the last element
+                          const double elemData[numElements][numNodes * valsPerNode],
+                          double *globalData) {
   const int valsPerElem = numNodes * valsPerNode;
 
-  for (int ii = threadID; ii < numElements * valsPerElem; ii += blockSize) {
+  for (int ii = threadID; ii < elementsToWrite * valsPerElem; ii += threadBlockSize) {
     const int elemWriteInd = ii / valsPerElem; // Which element am I writing data for
     const int globalElemWriteInd =
         firstElemGlobalInd + elemWriteInd;                // What's the global index of the element I'm writing data for
@@ -570,6 +584,10 @@ __global__ void assemblePlaneStressResidualKernel(const int *const connPtr,
   __shared__ double localNodeCoords[elemPerBlock][numNodes * numDim];
   __shared__ double localRes[elemPerBlock][numNodes * numStates];
 
+#ifndef NDEBUG
+  printf("assemblePlaneStressResidualKernel: Created shared memory\n");
+#endif
+
   // zero the local residual
   for (int ii = threadIdx.x; ii < (elemPerBlock * numNodes * numStates); ii += blockDim.x) {
     const int DOFPerElem = numNodes * numStates;
@@ -577,10 +595,19 @@ __global__ void assemblePlaneStressResidualKernel(const int *const connPtr,
     const int arrInd = ii % DOFPerElem;
     localRes[eInd][arrInd] = 0.0;
   }
-  __syncthreads();
+
+  // Before loading data we need to whether this block will go past the last element and reign it in if it will
+  const int blockStartElement = elemPerBlock * blockIdx.x;
+  const int numElementsToCompute =
+      blockStartElement + elemPerBlock >= numElements ? numElements - blockStartElement : elemPerBlock;
 
 #ifndef NDEBUG
-  printf("assemblePlaneStressResidualKernel: Created shared memory\n");
+  if (numElementsToCompute < elemPerBlock) {
+    printf("Thread block %d: Supposed to process %d elements, but limited to %d as reached last element\n",
+           blockIdx.x,
+           elemPerBlock,
+           numElementsToCompute);
+  }
 #endif
 
   gatherElementNodalValues<elemPerBlock, numNodes, numStates>(connPtr,
@@ -588,7 +615,8 @@ __global__ void assemblePlaneStressResidualKernel(const int *const connPtr,
                                                               states,
                                                               localThreadInd,
                                                               blockSize,
-                                                              blockIdx.x * elemPerBlock,
+                                                              blockStartElement,
+                                                              numElementsToCompute,
                                                               localNodeStates);
 
   gatherElementNodalValues<elemPerBlock, numNodes, numDim>(connPtr,
@@ -596,7 +624,8 @@ __global__ void assemblePlaneStressResidualKernel(const int *const connPtr,
                                                            nodeCoords,
                                                            localThreadInd,
                                                            blockSize,
-                                                           blockIdx.x * elemPerBlock,
+                                                           blockStartElement,
+                                                           numElementsToCompute,
                                                            localNodeCoords);
 
 #ifndef NDEBUG
@@ -646,7 +675,7 @@ __global__ void assemblePlaneStressResidualKernel(const int *const connPtr,
 #endif
 
     // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
-    addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakRes, JInv, localRes[localElementInd]);
+    addTransformStateGradSens<order, numStates, numDim, true>(quadPtXi, weakRes, JInv, localRes[localElementInd]);
 
 #ifndef NDEBUG
     printf("assemblePlaneStressResidualKernel: Finished addTransformStateGradSens\n");
@@ -658,7 +687,8 @@ __global__ void assemblePlaneStressResidualKernel(const int *const connPtr,
                                                                conn,
                                                                localThreadInd,
                                                                blockSize,
-                                                               blockIdx.x * elemPerBlock,
+                                                               blockStartElement,
+                                                               numElementsToCompute,
                                                                localRes,
                                                                residual);
 
@@ -667,7 +697,63 @@ __global__ void assemblePlaneStressResidualKernel(const int *const connPtr,
 #endif
 }
 
-template <int order, int numStates, int numDim, A2D::GreenStrainType strainType = A2D::GreenStrainType::LINEAR>
+template <int numElements, int numNodes, int valsPerNode>
+__device__ void
+scatterElementMat(const int *const map,
+                  const int threadID,
+                  const int threadBlockSize,
+                  const int firstElemGlobalInd,
+                  const int elementsToWrite, // Need this in case out block goes past the last element
+                  const double elemMat[numElements][(numNodes * valsPerNode) * (numNodes * valsPerNode)],
+                  double *const globalMatData) {
+  constexpr int nodesPerElem = numNodes * numNodes;
+  constexpr int numDOF = numNodes * valsPerNode;
+  constexpr int valsPerElem = numDOF * numDOF;
+  constexpr int matBlockSize = valsPerNode * valsPerNode;
+
+  for (int ii = threadID; ii < elementsToWrite * valsPerElem; ii += threadBlockSize) {
+    const int elemWriteInd = ii / valsPerElem; // Which element am I writing data for
+    const int globalElemWriteInd =
+        firstElemGlobalInd + elemWriteInd; // What's the global index of the element I'm writing data for
+
+    // Now we have a decision to make, do we assign consecutive threads to consecutive entries in the element matrix?
+    // Or to consecutive entries in each global matrix block. The first approach will lead to more coalesced reads,
+    // the second should lead to more coalesced writes. For now I'll assign consecutive threads to consecutive entries
+    // in each block
+
+    const int elemInternalInd = ii % valsPerElem;                // What's my index within this element?
+    const int blockInd = elemInternalInd / matBlockSize;         // Which block of the element matrix am I handling?
+    const int blockInternalInd = elemInternalInd % matBlockSize; // Which entry within the block am I handling
+    // What are the node indices for the block I'm handling
+    const int blockColInd = blockInd % numNodes;
+    const int blockRowInd = blockInd / numNodes;
+    const int elemMatColInd = blockColInd * valsPerNode + blockInternalInd % valsPerNode;
+    const int elemMatRowInd = blockRowInd * valsPerNode + blockInternalInd / valsPerNode;
+    const int elemMatFlatInd = elemMatRowInd * numDOF + elemMatColInd;
+
+    const int mapInd = globalElemWriteInd * nodesPerElem + blockRowInd * numNodes + blockColInd;
+    const int blockStartInd = map[mapInd];
+
+#ifndef NDEBUG
+    printf("Thread %d: scattering element %d mat[ %d, %d] to entry %d in block starting at entry %d in global mat "
+           "data\n",
+           threadID,
+           globalElemWriteInd,
+           elemMatRowInd,
+           elemMatColInd,
+           blockInternalInd,
+           blockStartInd);
+#endif
+
+    atomicAdd(&globalMatData[blockStartInd + blockInternalInd], elemMat[elemWriteInd][elemMatFlatInd]);
+  }
+}
+
+template <int order,
+          int numStates,
+          int numDim,
+          int elemPerBlock = 1,
+          A2D::GreenStrainType strainType = A2D::GreenStrainType::LINEAR>
 __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
                                                   const int *const conn,
                                                   const int numElements,
@@ -679,150 +765,272 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
                                                   int *bcsrMap,
                                                   double *const residual,
                                                   double *const matEntries) {
-  //   constexpr int numNodes = (order + 1) * (order + 1);
+  constexpr int numNodes = (order + 1) * (order + 1);
+  constexpr int numDOF = numNodes * numStates;
+  constexpr int elementMatSize = numDOF * numDOF;
 
-  //   // One element per thread
-  //   const int elementInd = blockIdx.x * blockDim.x + threadIdx.x;
-  //   if (elementInd < numElements) {
-  //     // Get the element nodal states and coordinates
-  //     A2D::Mat<double, numNodes, numStates> localNodeStates;
-  //     A2D::Mat<double, numNodes, numDim> localNodeCoords;
-  //     gatherElementData<numNodes, numStates, numDim>(connPtr,
-  //                                                    conn,
-  //                                                    elementInd,
-  //                                                    states,
-  //                                                    nodeCoords,
-  //                                                    localNodeStates,
-  //                                                    localNodeCoords);
+  // Figure out various thread indices, one thread per mat column
+  const int blockSize = blockDim.x;
+  const int localThreadInd = threadIdx.x;
+  const int localElementInd = localThreadInd / numDOF;
+  // const int globalElementInd = elemPerBlock * blockIdx.x + localElementInd;
 
-  //     A2D::Mat<double, numNodes, numStates> localRes;
-  //     const int numDOF = numNodes * numStates;
-  //     A2D::Mat<double, numDOF, numDOF> localMat;
+  const int columnInd = localThreadInd % numDOF;
 
-  //     // Now the main quadrature loop
-  //     for (int quadPtXInd = 0; quadPtXInd < (order + 1); quadPtXInd++) {
-  //       const double quadPtXWeight = getGaussQuadWeight<order>(quadPtXInd);
-  //       const double quadPtXCoord = getGaussQuadCoord<order>(quadPtXInd);
-  //       for (int quadPtYInd = 0; quadPtYInd < (order + 1); quadPtYInd++) {
-  //         const double quadPtYWeight = getGaussQuadWeight<order>(quadPtYInd);
-  //         const double quadPtYCoord = getGaussQuadCoord<order>(quadPtYInd);
-  //         const double quadPtWeight = quadPtXWeight * quadPtYWeight;
-  //         const double quadPtXi[2] = {quadPtXCoord, quadPtYCoord};
+  // ==============================================================================
+  // Load element data
+  // ==============================================================================
+  // Local element data will live in shared memory as arrays of A2Dmats
+  __shared__ double localNodeStates[elemPerBlock][numDOF];
+  __shared__ double localNodeCoords[elemPerBlock][numNodes * numDim];
+  // __shared__ double localRes[elemPerBlock][numDOF];
+  __shared__ double localMat[elemPerBlock][elementMatSize];
 
-  //         // Compute Jacobian, J = dx/dxi
-  //         A2D::Mat<double, numDim, numDim> J, JInv;
-  //         interpParamGradient<order, numDim, numDim>(quadPtXi, localNodeCoords, J);
-
-  //         // --- Compute J^-1 and detJ ---
-  //         A2D::MatInv(J, JInv);
-  //         double detJ;
-  //         A2D::MatDet(J, detJ);
-
-  //         // --- Compute state gradient in physical space ---
-  //         A2D::Mat<double, numStates, numDim> dudx;
-  //         interpRealGradient<order, numDim, numDim>(quadPtXi, localNodeStates, JInv, dudx);
-
-  //         // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight
-  //         and
-  //         // detJ)
-  //         A2D::Mat<double, numStates, numDim> weakRes;
-  //         planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeight * detJ, weakRes);
-
-  //         // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
-  //         addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakRes, JInv, localRes);
-
-  //         // We will compute the element Jac one column at a time, essentially doing a forward AD pass through the
-  //         // residual calculation
-
-  //         // Create a matrix of AD scalars that will store dudx and it's forward seed
-  //         A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> dudxFwd;
-  //         for (int ii = 0; ii < numStates; ii++) {
-  //           for (int jj = 0; jj < numDim; jj++) {
-  //             dudxFwd(ii, jj).value = dudx(ii, jj);
-  //           }
-  //         }
-  //         for (int nodeYInd = 0; nodeYInd < (order + 1); nodeYInd++) {
-  //           for (int nodeXInd = 0; nodeXInd < (order + 1); nodeXInd++) {
-  //             const int nodeInd = nodeYInd * (order + 1) + nodeXInd;
-  //             double N;
-  //             // Technically we should set a forward seed of 1 in q(nodeInd, stateInd) and 0 in all other entries,
-  //             then
-  //             // propogate that seed through the state gradient interpolation, but because we are only seeding a
-  //             single
-  //             // nodal state each round, we only need to use the basis function gradient for that node to propogate
-  //             // through the state gradient calculation
-
-  //             // Forward seed of dudxi is just dNdxi for this node
-  //             A2D::Mat<double, 1, numDim> dudxiDot, dudxDot;
-  //             lagrangePoly2dDeriv<double, order>(quadPtXi, nodeXInd, nodeYInd, N, dudxiDot.get_data());
-  //             // Now propogate through dudx = dudxi * J^-1
-  //             A2D::MatMatMult(dudxiDot, JInv, dudxDot);
-  //             for (int stateInd = 0; stateInd < numStates; stateInd++) {
-  //               // Now we will do a forward AD pass through the weak residual calculation by setting dudxDot as the
-  //               seed
-  //               // in the state gradient
-  //               for (int ii = 0; ii < numStates; ii++) {
-  //                 for (int jj = 0; jj < numDim; jj++) {
-  //                   dudxFwd(ii, jj).deriv[0] = 0.0;
-  //                 }
-  //               }
-  //               for (int jj = 0; jj < numDim; jj++) {
-  //                 dudxFwd(stateInd, jj).deriv[0] = dudxDot[jj];
-  //               }
-
-  //               A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> weakResFwd;
-  //               planeStressWeakRes<strainType>(dudxFwd, E, nu, t, quadPtWeight * detJ, weakResFwd);
-
-  //               // Put the forward seed of the weak residual into it's own matrix
-  //               A2D::Mat<double, numStates, numDim> weakResDot;
-  //               for (int ii = 0; ii < numStates; ii++) {
-  //                 for (int jj = 0; jj < numDim; jj++) {
-  //                   weakResDot(ii, jj) = weakResFwd(ii, jj).deriv[0];
-  //                 }
-  //               }
-
-  //               // Now propogate through the transformation of the state gradient sensitivity, this gives us this
-  //               quad
-  //               // point's contribution to this column of the element jacobian
-  //               A2D::Mat<double, numNodes, numStates> matColContribution;
-  //               addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakResDot, JInv, matColContribution);
-
-  //               // Add this column contribution to the element jacobian
-  //               const int colInd = nodeInd * numStates + stateInd;
-  // #ifndef NDEBUG
-  //               printf("QuadPt (%d, %d) contribution to column %d = ", quadPtXInd, quadPtYInd, colInd);
-  //               printMat(matColContribution);
-  // #endif
-  //               for (int ii = 0; ii < numNodes; ii++) {
-  //                 for (int jj = 0; jj < numStates; jj++) {
-  //                   const int rowInd = ii * numStates + jj;
-  //                   localMat(rowInd, colInd) += matColContribution(ii, jj);
-  //                 }
-  //               }
-  //             }
-  //           }
-  //         }
-  //       }
-  //     }
-  // #ifndef NDEBUG
-  //     printf("Local element Jacobian = ");
-  //     printMat(localMat);
-  // #endif
-  //     // --- Scatter the local element Jacobian into the global matrix ---
-  //     scatterMat<numNodes, numStates>(connPtr,
-  //                                     conn,
-  //                                     elementInd,
-  //                                     &bcsrMap[elementInd * numNodes * numNodes],
-  //                                     localMat,
-  //                                     matEntries);
-
-  //     // --- Scatter local residual back to global array---
-  //     if (residual != nullptr) {
-  //       scatterResidual(connPtr, conn, elementInd, localRes, residual);
-  //     }
-  //   }
-}
+#ifndef NDEBUG
+  printf("assemblePlaneStressJacobianKernel: Created shared memory\n");
 #endif
+
+  // zero the local residual
+  // for (int ii = localThreadInd; ii < (elemPerBlock * numDOF); ii += blockDim.x) {
+  //   const int eInd = ii / numDOF;
+  //   const int arrInd = ii % numDOF;
+  //   localRes[eInd][arrInd] = 0.0;
+  // }
+
+  // Zero the local matrix
+  for (int ii = localThreadInd; ii < (elemPerBlock * elementMatSize); ii += blockDim.x) {
+    const int eInd = ii / elementMatSize;
+    const int arrInd = ii % elementMatSize;
+    localMat[eInd][arrInd] = 0.0;
+  }
+
+#ifndef NDEBUG
+  printf("assemblePlaneStressJacobianKernel: Zeroed element matrices\n");
+#endif
+
+  // Before loading data we need to whether this block will go past the last element and reign it in if it will
+  const int blockStartElement = elemPerBlock * blockIdx.x;
+  const int numElementsToCompute =
+      blockStartElement + elemPerBlock >= numElements ? numElements - blockStartElement : elemPerBlock;
+
+#ifndef NDEBUG
+  if (numElementsToCompute < elemPerBlock) {
+    printf("Thread block %d: Supposed to process %d elements, but limited to %d as reached last element\n",
+           blockIdx.x,
+           elemPerBlock,
+           numElementsToCompute);
+  }
+#endif
+
+  // Get the element nodal states and coordinates using coalesced loads
+  gatherElementNodalValues<elemPerBlock, numNodes, numStates>(connPtr,
+                                                              conn,
+                                                              states,
+                                                              localThreadInd,
+                                                              blockSize,
+                                                              blockStartElement,
+                                                              numElementsToCompute,
+                                                              localNodeStates);
+
+  gatherElementNodalValues<elemPerBlock, numNodes, numDim>(connPtr,
+                                                           conn,
+                                                           nodeCoords,
+                                                           localThreadInd,
+                                                           blockSize,
+                                                           blockStartElement,
+                                                           numElementsToCompute,
+                                                           localNodeCoords);
+
+  __syncthreads();
+
+#ifndef NDEBUG
+  printf("assemblePlaneStressJacobianKernel: Finished loading element data\n");
+#endif
+
+  const bool isActiveThread = localElementInd < numElementsToCompute;
+
+  // Now the main quadrature loop
+  if (isActiveThread) {
+    for (int quadPtXInd = 0; quadPtXInd < (order + 1); quadPtXInd++) {
+      const double quadPtXWeight = getGaussQuadWeight<order>(quadPtXInd);
+      const double quadPtXCoord = getGaussQuadCoord<order>(quadPtXInd);
+      for (int quadPtYInd = 0; quadPtYInd < (order + 1); quadPtYInd++) {
+        const double quadPtYWeight = getGaussQuadWeight<order>(quadPtYInd);
+        const double quadPtYCoord = getGaussQuadCoord<order>(quadPtYInd);
+        const double quadPtWeight = quadPtXWeight * quadPtYWeight;
+        const double quadPtXi[2] = {quadPtXCoord, quadPtYCoord};
+
+        // Compute Jacobian, J = dx/dxi
+        A2D::Mat<double, numDim, numDim> J, JInv;
+        interpParamGradient<order, numDim, numDim>(quadPtXi, localNodeCoords[localElementInd], J);
+
+        // #ifndef NDEBUG
+        //         printf("assemblePlaneStressJacobianKernel: Finished interpParamGradient\n");
+        // #endif
+
+        // --- Compute J^-1 and detJ ---
+        A2D::MatInv(J, JInv);
+        double detJ;
+        A2D::MatDet(J, detJ);
+
+        // --- Compute state gradient in physical space ---
+        A2D::Mat<double, numStates, numDim> dudx;
+        interpRealGradient<order, numDim, numDim>(quadPtXi, localNodeStates[localElementInd], JInv, dudx);
+
+        // #ifndef NDEBUG
+        //         printf("assemblePlaneStressJacobianKernel: Finished interpRealGradient\n");
+        // #endif
+
+        // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight and
+        // detJ)
+        // A2D::Mat<double, numStates, numDim> weakRes;
+        // planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeight * detJ, weakRes);
+
+        // TODO: How do we handle the residual evaluation, could either have only first thread in each element add to
+        // localRes, or have all threads add to it, scaled down by numDOF, or we could just not compute the local
+        // residual altogether?
+        // FIXME: For now I am just not computing the residual
+
+        // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
+        // addTransformStateGradSens<order, numStates, numDim, true>(quadPtXi, weakRes, JInv, localRes);
+
+        // We will compute the element Jac one column at a time, essentially doing a forward AD pass through the
+        // residual calculation
+
+        // NOTE: This is where the loop over nodes would start in the serial code
+        // Technically we should set a forward seed of 1 in q(nodeInd, stateInd) and 0 in all other entries, then
+        // propogate that seed through the state gradient interpolation, but because we are only seeding a single
+        // nodal state, we only need to use the basis function gradient for that node to propogate through the state
+        // gradient calculation
+        const int nodeInd = columnInd / numStates;
+        const int nodeXInd = nodeInd % (order + 1);
+        const int nodeYInd = nodeInd / (order + 1);
+        double N;
+
+        // Forward seed of dudxi is just dNdxi for this node
+        A2D::Mat<double, 1, numDim> dudxiDot, dudxDot;
+        lagrangePoly2dDeriv<double, order>(quadPtXi, nodeXInd, nodeYInd, N, dudxiDot.get_data());
+
+        // #ifndef NDEBUG
+        //         printf("assemblePlaneStressJacobianKernel: Finished computing dudxi forward seed\n");
+        // #endif
+
+        // Now propogate through dudx = dudxi * J^-1
+        A2D::MatMatMult(dudxiDot, JInv, dudxDot);
+
+        // NOTE: This is where we would have a loop over the different states for each node in the serial code
+        const int stateInd = columnInd % numStates;
+
+        // Create a matrix of AD scalars that will store dudx and it's forward seed
+        A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> dudxFwd;
+        for (int ii = 0; ii < numStates; ii++) {
+          for (int jj = 0; jj < numDim; jj++) {
+            dudxFwd(ii, jj).value = dudx(ii, jj);
+          }
+        }
+
+        // Now we will do a forward AD pass through the weak residual calculation by
+        // setting dudxDot as the seed in the state gradient
+        // for (int ii = 0; ii < numStates; ii++) {
+        //   for (int jj = 0; jj < numDim; jj++) {
+        //     dudxFwd(ii, jj).deriv[0] = 0.0;
+        //   }
+        // }
+        for (int jj = 0; jj < numDim; jj++) {
+          dudxFwd(stateInd, jj).deriv[0] = dudxDot[jj];
+        }
+
+        // #ifndef NDEBUG
+        //         printf("assemblePlaneStressJacobianKernel: Finished computing dudx forward seed\n");
+        // #endif
+
+        A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> weakResFwd;
+        planeStressWeakRes<strainType>(dudxFwd, E, nu, t, quadPtWeight * detJ, weakResFwd);
+
+        // Put the forward seed of the weak residual into it's own matrix
+        A2D::Mat<double, numStates, numDim> weakResDot;
+        for (int ii = 0; ii < numStates; ii++) {
+          for (int jj = 0; jj < numDim; jj++) {
+            weakResDot(ii, jj) = weakResFwd(ii, jj).deriv[0];
+          }
+        }
+
+        // #ifndef NDEBUG
+        //         printf("assemblePlaneStressJacobianKernel: Finished computing weakRes forward seed\n");
+        // #endif
+
+        // Now propogate through the transformation of the state gradient sensitivity, this gives us this quad point's
+        // contribution to this column of the element jacobian
+        double matColContribution[numDOF];
+        memset(matColContribution, 0, numDOF * sizeof(double));
+        addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakResDot, JInv, matColContribution);
+
+        // #ifndef NDEBUG
+        //         printf("assemblePlaneStressJacobianKernel: Finished addTransformStateGradSens\n");
+        // #endif
+
+        // Add this column contribution to the element jacobian, consecutive threads should be adding to consecutive
+        // entries in the row of the local matrix, which should give good performance?
+        for (int ii = 0; ii < numDOF; ii++) {
+          localMat[localElementInd][ii * numDOF + columnInd] += matColContribution[ii];
+        }
+        // #ifndef NDEBUG
+        // printf("assemblePlaneStressJacobianKernel: Finished adding matColContribution to localMat\n");
+        // printf("Thread %d: Quad pt [%d, %d] added %f to row 0, column %d, value is now %f\n",
+        //        localThreadInd,
+        //        quadPtXInd,
+        //        quadPtYInd,
+        //        matColContribution[0],
+        //        columnInd,
+        //        localMat[localElementInd][columnInd]);
+        // #endif
+      }
+    }
+
+#ifndef NDEBUG
+    if (columnInd == 0) {
+      printf("Element %d Jacobian = \n", localElementInd);
+      printMat(localMat[localElementInd], numDOF, numDOF);
+    }
+#endif
+  }
+  __syncthreads();
+  // --- Scatter the local element Jacobian into the global matrix ---
+  scatterElementMat<elemPerBlock, numNodes, numStates>(bcsrMap,
+                                                       localThreadInd,
+                                                       blockSize,
+                                                       blockStartElement,
+                                                       numElementsToCompute,
+                                                       localMat,
+                                                       matEntries);
+
+  // --- Scatter local residual back to global array---
+  // if (residual != nullptr) {
+  //   scatterResidual(connPtr, conn, elementInd, localRes, residual);
+  // }
+}
+// #endif
+
+constexpr int getResidualElemPerBlock(const int elementOrder) {
+  switch (elementOrder) {
+    case 1:
+      return 8;
+      break;
+    case 2:
+      return 7; // 7 best so far 5.17809000000e-04
+      break;
+    case 3:
+      return 2;
+      break;
+    case 4:
+      return 5; // 5 best so far
+      break;
+
+    default:
+      return 8;
+      break;
+  }
+}
 
 double runResidualKernel(const int elementOrder,
                          const int *const connPtr,
@@ -836,23 +1044,28 @@ double runResidualKernel(const int elementOrder,
                          double *const residual) {
 #ifdef __CUDACC__
   // Figure out how many blocks and threads to use
-  const int elemPerBlock = 4;
-  const int numQuadPoints = (elementOrder + 1) * (elementOrder + 1);
-  const int warpsPerBlock = (elemPerBlock * numQuadPoints + 32 - 1) / 32;
-  const int threadsPerBlock = 32 * warpsPerBlock;
-  const int numBlocks = (numElements + elemPerBlock - 1) / elemPerBlock;
-#ifndef NDEBUG
-  printf("For %d elements, launching %d blocks with %d threads each, %d elements per block\n",
-         numElements,
-         numBlocks,
-         threadsPerBlock,
-         elemPerBlock);
-#endif
+  // const int elemPerBlock = 8;
+  // const int numQuadPoints = (elementOrder + 1) * (elementOrder + 1);
+  // const int warpsPerBlock = (elemPerBlock * numQuadPoints + 32 - 1) / 32;
+  // const int threadsPerBlock = 32 * warpsPerBlock;
+  // const int numBlocks = (numElements + elemPerBlock - 1) / elemPerBlock;
+// #ifndef NDEBUG
+//   printf("For %d elements, launching %d blocks with %d threads each, %d elements per block\n",
+//          numElements,
+//          numBlocks,
+//          threadsPerBlock,
+//          elemPerBlock);
+// #endif
 #endif
   auto t1 = std::chrono::high_resolution_clock::now();
 
 #ifdef __CUDACC__
 #define ASSEMBLE_PLANE_STRESS_RESIDUAL(elementOrder)                                                                   \
+  const int elemPerBlock = getResidualElemPerBlock(elementOrder);                                                      \
+  const int numQuadPoints = (elementOrder + 1) * (elementOrder + 1);                                                   \
+  const int warpsPerBlock = (elemPerBlock * numQuadPoints + 32 - 1) / 32;                                              \
+  const int threadsPerBlock = 32 * warpsPerBlock;                                                                      \
+  const int numBlocks = (numElements + elemPerBlock - 1) / elemPerBlock;                                               \
   assemblePlaneStressResidualKernel<elementOrder, 2, 2, elemPerBlock>                                                  \
       <<<numBlocks, threadsPerBlock>>>(connPtr, conn, numElements, states, nodeCoords, E, nu, t, residual);
 #else
@@ -869,18 +1082,18 @@ double runResidualKernel(const int elementOrder,
 #endif
 
   switch (elementOrder) {
-    case 1:
+    case 1: {
       ASSEMBLE_PLANE_STRESS_RESIDUAL(1);
-      break;
-    case 2:
+    } break;
+    case 2: {
       ASSEMBLE_PLANE_STRESS_RESIDUAL(2);
-      break;
-    case 3:
+    } break;
+    case 3: {
       ASSEMBLE_PLANE_STRESS_RESIDUAL(3);
-      break;
-    case 4:
+    } break;
+    case 4: {
       ASSEMBLE_PLANE_STRESS_RESIDUAL(4);
-      break;
+    } break;
     default:
       break;
   }
@@ -891,6 +1104,27 @@ double runResidualKernel(const int elementOrder,
   /* Getting number of seconds as a double. */
   std::chrono::duration<double> tmp = t2 - t1;
   return tmp.count();
+}
+
+constexpr int getJacobianElemPerBlock(const int elementOrder) {
+  switch (elementOrder) {
+    case 1:
+      return 16; // 16 best so far: 1.98348797858e-03
+      break;
+    case 2:
+      return 7; // 7 best so far: 3.42732807621e-03, 15 returns all zeroes for some reason
+      break;
+    case 3:
+      return 1; // 1 best so far: 6.99187163264e-03, 6 and above uses too much shared mem
+      break;
+    case 4:
+      return 2; // 2 best so far: 1.47015675902e-02, 3 and above uses too much shared memory
+      break;
+
+    default:
+      return 2;
+      break;
+  }
 }
 
 double runJacobianKernel(const int elementOrder,
@@ -907,8 +1141,18 @@ double runJacobianKernel(const int elementOrder,
                          double *const matEntries) {
 #ifdef __CUDACC__
   // Figure out how many blocks and threads to use
-  const int threadsPerBlock = 4 * 32;
-  const int numBlocks = (numElements + threadsPerBlock - 1) / threadsPerBlock;
+  //   const int elemPerBlock = 2;
+  //   const int numDOF = 2 * (elementOrder + 1) * (elementOrder + 1);
+  //   const int warpsPerBlock = (elemPerBlock * numDOF + 32 - 1) / 32;
+  //   const int threadsPerBlock = 32 * warpsPerBlock;
+  //   const int numBlocks = (numElements + elemPerBlock - 1) / elemPerBlock;
+  // #ifndef NDEBUG
+  //   printf("For %d elements, launching %d blocks with %d threads each, %d elements per block\n",
+  //          numElements,
+  //          numBlocks,
+  //          threadsPerBlock,
+  //          elemPerBlock);
+  // #endif
   // --- Create timing events ---
   cudaEvent_t start, stop;
   cudaEventCreate(&start);
@@ -921,17 +1165,22 @@ double runJacobianKernel(const int elementOrder,
 // Helper macro so I don't have to write out all these inputs every time
 #ifdef __CUDACC__
 #define ASSEMBLE_PLANE_STRESS_JACOBIAN(elementOrder)                                                                   \
-  assemblePlaneStressJacobianKernel<elementOrder, 2, 2><<<numBlocks, threadsPerBlock>>>(connPtr,                       \
-                                                                                        conn,                          \
-                                                                                        numElements,                   \
-                                                                                        states,                        \
-                                                                                        nodeCoords,                    \
-                                                                                        E,                             \
-                                                                                        nu,                            \
-                                                                                        t,                             \
-                                                                                        elementBCSRMap,                \
-                                                                                        residual,                      \
-                                                                                        matEntries);
+  const int elemPerBlock = getJacobianElemPerBlock(elementOrder);                                                      \
+  const int numDOF = 2 * (elementOrder + 1) * (elementOrder + 1);                                                      \
+  const int warpsPerBlock = (elemPerBlock * numDOF + 32 - 1) / 32;                                                     \
+  const int threadsPerBlock = 32 * warpsPerBlock;                                                                      \
+  const int numBlocks = (numElements + elemPerBlock - 1) / elemPerBlock;                                               \
+  assemblePlaneStressJacobianKernel<elementOrder, 2, 2, elemPerBlock><<<numBlocks, threadsPerBlock>>>(connPtr,         \
+                                                                                                      conn,            \
+                                                                                                      numElements,     \
+                                                                                                      states,          \
+                                                                                                      nodeCoords,      \
+                                                                                                      E,               \
+                                                                                                      nu,              \
+                                                                                                      t,               \
+                                                                                                      elementBCSRMap,  \
+                                                                                                      residual,        \
+                                                                                                      matEntries);
 #else
 #define ASSEMBLE_PLANE_STRESS_JACOBIAN(elementOrder)                                                                   \
   assemblePlaneStressJacobian<elementOrder, 2, 2>(connPtr,                                                             \
@@ -949,18 +1198,18 @@ double runJacobianKernel(const int elementOrder,
   // We need a switch statement here because the kernel is templated on the number of nodes, which we only
   // know at runtime
   switch (elementOrder) {
-    case 1:
+    case 1: {
       ASSEMBLE_PLANE_STRESS_JACOBIAN(1);
-      break;
-    case 2:
+    } break;
+    case 2: {
       ASSEMBLE_PLANE_STRESS_JACOBIAN(2);
-      break;
-    case 3:
+    } break;
+    case 3: {
       ASSEMBLE_PLANE_STRESS_JACOBIAN(3);
-      break;
-    case 4:
+    } break;
+    case 4: {
       ASSEMBLE_PLANE_STRESS_JACOBIAN(4);
-      break;
+    } break;
     default:
       break;
   }
