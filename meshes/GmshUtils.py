@@ -11,12 +11,13 @@ utility functions for making meshes with gmsh
 # ==============================================================================
 # Standard Python modules
 # ==============================================================================
-from typing import Sequence
+from typing import Sequence, Optional
 
 # ==============================================================================
 # External Python modules
 # ==============================================================================
 import gmsh
+import numpy as np
 
 # ==============================================================================
 # Extension modules
@@ -114,18 +115,39 @@ def meshSurface(
     gmsh.model.mesh.optimize(smoothingType, niter=smoothingIterations)
 
 
-def fixGmshBDF(fileName):
+def fixGmshBDF(inputFile: str, outputFile: Optional[str] = None):
     # Open the mesh file and a new file with the same name but with "Fixed" appended to the end
-    with open(fileName, "r") as f:
+    with open(inputFile, "r") as f:
         origLines = f.readlines()
         newLines = computeNewLines(origLines)
 
-    # Now overwrite the original file with the new lines
-    with open(f"{fileName}", "w") as g:
+    # Now write the new lines to the new file
+    if outputFile is None:
+        outputFile = inputFile.replace(".bdf", "Fixed.bdf")
+    with open(f"{outputFile}", "w") as g:
         for line in newLines:
             if line[-1] != "\n":
                 line += "\n"
             g.write(line)
+
+
+def parseElementLines(elementLines: str):
+    columnWidth = 8
+    elementLine = []
+    lineEndTerm = None
+    for line in elementLines:
+        # Remove the newline character and potentially the "+" term that gmsh adds
+        line = line.replace("\n", "")
+        if lineEndTerm is not None:
+            line = line.replace(lineEndTerm, "")
+        # See if there's a "+" character in the line and if so, remove everything after it
+        plusPosition = line.find("+")
+        if plusPosition != -1:
+            lineEndTerm = line[plusPosition:]
+            line = line[:plusPosition]
+        # Go through the line and split it into 8 character terms
+        elementLine += [line[i : i + columnWidth] for i in range(0, len(line), columnWidth)]
+    return elementLine
 
 
 def computeNewLines(origLines):
@@ -141,13 +163,19 @@ def computeNewLines(origLines):
             while "CQUAD" not in origLines[lineNum] and "ENDDATA" not in origLines[lineNum]:
                 elementLines.append(origLines[lineNum])
                 lineNum += 1
-            # Combine the lines into a single line then split into a list by splitting whitespace
-            elementLine = " ".join(elementLines)
-            elementLine = elementLine.split()
-            # Remove the weird + symbol terms that gmsh adds
-            elementLine = [term for term in elementLine if "+" not in term]
+            elementLine = parseElementLines(elementLines)
+
+            # # Combine the lines into a single line then split into a list by splitting every 8 characters
+            # elementLine = "".join(elementLines).replace("\n", "")
+            # elementLine = [elementLine[i : i + columnWidth] for i in range(0, len(elementLine), columnWidth)]
+            # # Remove the weird + symbol terms that gmsh adds and any newlines
+            # elementLine = [term for term in elementLine if "+" not in term]
+            #
             # Figure out which element type we have
             numNodes = len(elementLine) - 3
+            # Raise an error if the number of nodes is not a square number
+            if np.sqrt(numNodes) % 1 != 0:
+                raise ValueError(f"Found element with {numNodes} nodes, which is not a square number")
             elementLine[0] = f"CQUAD{numNodes}"
             # Write the new line(s) to the new file
             entryCount = 0

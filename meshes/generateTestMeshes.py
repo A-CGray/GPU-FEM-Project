@@ -27,7 +27,7 @@ from generateSquareMesh import generateSquareMesh
 
 # Figure out where to put the meshes
 outputDir = "/nobackup/achris10/GPU-FEM-Project/meshes"
-if not os.path.isdir():
+if not os.path.isdir(outputDir):
     outputDir = None
 
 # For each geometry we want a way to compute the mesh size that will give use the desired number of DOF.

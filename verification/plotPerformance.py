@@ -6,7 +6,8 @@ from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
 import niceplots
 
-def getMeshInfoFromName(fileName:str):
+
+def getMeshInfoFromName(fileName: str):
     name = os.path.split(fileName)[-1]
     nameParts = name[:-4].split("-")
     geomType = nameParts[0]
@@ -20,8 +21,12 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dir", type=str, default="./", help="Directory to look for results in and to write outputs to")
+    parser.add_argument(
+        "--dir", type=str, default="./", help="Directory to look for results in and to write outputs to"
+    )
     args = parser.parse_args()
+
+    # args.dir = "/run/media/ali/T7 Shield/GPU-FEM-Project/QuadPtParallel"
 
     plt.style.use(niceplots.get_style())
 
@@ -33,21 +38,36 @@ if __name__ == "__main__":
 
     # Make plots for Jacobian and residual times vs numDOF
     for timingFiles, name in zip([jacTimingFiles, resTimingFiles], ["Jacobian", "Residual"]):
-        fig, ax = plt.subplots(figsize=(10,10))
-        ax.set_xscale("log")
-        ax.set_xlabel("Number of DOF")
-        ax.set_xscale("log")
-        ax.set_ylabel("GDOF/s")
-        ax.set_title(f"{name} assembly performance")
+        efFig, efAx = plt.subplots(figsize=(10, 10))
+        efAx.set_xscale("log")
+        efAx.set_xlabel("Number of DOF")
+        efAx.set_ylabel("GDOF/s")
+        efAx.set_title(f"{name} assembly performance")
+
+        timeFig, timeAx = plt.subplots(figsize=(10, 10))
+        timeAx.set_xscale("log")
+        timeAx.set_xlabel("Number of DOF")
+        timeAx.set_yscale("log")
+        timeAx.set_ylabel("Median wall time (s)")
+        timeAx.set_title(f"{name} assembly performance")
         for file in timingFiles:
             geomType, elementOrder, numElements, numDOF = getMeshInfoFromName(file)
             if numDOF > 500:
                 times = np.loadtxt(file)
-                medianDOFPerSec = numDOF / np.median(times)/1e9
+                medianTime = np.median(times)
+                medianDOFPerSec = numDOF / medianTime / 1e9
 
-                ax.plot(
+                efAx.plot(
                     numDOF,
                     medianDOFPerSec,
+                    marker=plotMarkers[geomType],
+                    color=plotColors[elementOrder - 1],
+                    markersize=10,
+                    clip_on=False,
+                )
+                timeAx.plot(
+                    numDOF,
+                    medianTime,
                     marker=plotMarkers[geomType],
                     color=plotColors[elementOrder - 1],
                     markersize=10,
@@ -65,13 +85,13 @@ if __name__ == "__main__":
         orderHandles = []
         orderLabels = []
         for i in range(1, 5):
-            orderHandles.append(Line2D([0], [0], marker="s", color=plotColors[i-1], linestyle="", markersize=10))
+            orderHandles.append(Line2D([0], [0], marker="s", color=plotColors[i - 1], linestyle="", markersize=10))
             orderLabels.append(f"{i}")
 
-        niceplots.adjust_spines(ax)
-        geomLegend = ax.legend(geomHandles, geomLabels, title="Mesh Geometry:", loc="upper left")
-        ax.add_artist(geomLegend)
-        ax.legend(orderHandles, orderLabels, title="Element Order:", loc='center left', labelcolor="linecolor")
+        for fig, ax, measureName in zip([efFig, timeFig], [efAx, timeAx], ["Efficiency", "Time"]):
+            niceplots.adjust_spines(ax)
+            geomLegend = ax.legend(geomHandles, geomLabels, title="Mesh Geometry:", loc="upper left")
+            ax.add_artist(geomLegend)
+            ax.legend(orderHandles, orderLabels, title="Element Order:", loc="center left", labelcolor="linecolor")
 
-        niceplots.save_figs(fig, os.path.join(args.dir, f"{name}-Performance"), formats=["pdf", "png"])
-
+            niceplots.save_figs(fig, os.path.join(args.dir, f"{name}-{measureName}"), formats=["pdf", "png"])

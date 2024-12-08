@@ -85,7 +85,6 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--sideLength", type=float, default=1.0)
-    parser.add_argument("--cutoutSize", type=float, default=0.6)
     parser.add_argument("--meshSize", type=float, default=0.1)
     parser.add_argument("--order", type=int, default=3)
     parser.add_argument("--smooth", type=int, default=10)
