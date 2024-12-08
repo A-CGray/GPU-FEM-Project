@@ -196,6 +196,36 @@ __DEVICE__ void addTransformStateGradSens(const double xi[numDim],
   }
 }
 
+// Ass above but only computes the sensitivity w.r.t a single nodal state
+template <int order, int numVals, int numDim, bool atomic = false>
+__DEVICE__ void addTransformStateGradSens(const double xi[numDim],
+                                          const A2D::Mat<double, numVals, numDim> stateGradSens,
+                                          const A2D::Mat<double, numDim, numDim> JInv,
+                                          const int nodeXInd,
+                                          const int nodeYInd,
+                                          const int stateInd,
+                                          double &nodalValSens) {
+  double dNidxi[numDim], N;
+  lagrangePoly2dDeriv<double, order>(xi, nodeXInd, nodeYInd, N, dNidxi);
+  double sum = 0;
+  for (int ii = 0; ii < numDim; ii++) {
+    for (int jj = 0; jj < numDim; jj++) {
+      sum += dNidxi[ii] * JInv(ii, jj) * stateGradSens(stateInd, jj);
+    }
+  }
+  if constexpr (atomic) {
+#ifdef __CUDACC__
+    atomicAdd(&nodalValSens, sum);
+#else
+#pragma omp atomic
+    nodalValSens += sum;
+#endif
+  }
+  else {
+    nodalValSens += sum;
+  }
+}
+
 // dudxi = localNodeValues^T * dNdxi
 template <int order, int numVals, int numDim>
 __DEVICE__ void interpParamGradient(const double xi[numDim],
@@ -783,7 +813,7 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
   // Local element data will live in shared memory as arrays of A2Dmats
   __shared__ double localNodeStates[elemPerBlock][numDOF];
   __shared__ double localNodeCoords[elemPerBlock][numNodes * numDim];
-  // __shared__ double localRes[elemPerBlock][numDOF];
+  __shared__ double localRes[elemPerBlock][numDOF];
   __shared__ double localMat[elemPerBlock][elementMatSize];
 
 #ifndef NDEBUG
@@ -791,11 +821,11 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
 #endif
 
   // zero the local residual
-  // for (int ii = localThreadInd; ii < (elemPerBlock * numDOF); ii += blockDim.x) {
-  //   const int eInd = ii / numDOF;
-  //   const int arrInd = ii % numDOF;
-  //   localRes[eInd][arrInd] = 0.0;
-  // }
+  for (int ii = localThreadInd; ii < (elemPerBlock * numDOF); ii += blockDim.x) {
+    const int eInd = ii / numDOF;
+    const int arrInd = ii % numDOF;
+    localRes[eInd][arrInd] = 0.0;
+  }
 
   // Zero the local matrix
   for (int ii = localThreadInd; ii < (elemPerBlock * elementMatSize); ii += blockDim.x) {
@@ -860,44 +890,8 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
         const double quadPtWeight = quadPtXWeight * quadPtYWeight;
         const double quadPtXi[2] = {quadPtXCoord, quadPtYCoord};
 
-        // Compute Jacobian, J = dx/dxi
-        A2D::Mat<double, numDim, numDim> J, JInv;
-        interpParamGradient<order, numDim, numDim>(quadPtXi, localNodeCoords[localElementInd], J);
-
-        // #ifndef NDEBUG
-        //         printf("assemblePlaneStressJacobianKernel: Finished interpParamGradient\n");
-        // #endif
-
-        // --- Compute J^-1 and detJ ---
-        A2D::MatInv(J, JInv);
-        double detJ;
-        A2D::MatDet(J, detJ);
-
-        // --- Compute state gradient in physical space ---
-        A2D::Mat<double, numStates, numDim> dudx;
-        interpRealGradient<order, numDim, numDim>(quadPtXi, localNodeStates[localElementInd], JInv, dudx);
-
-        // #ifndef NDEBUG
-        //         printf("assemblePlaneStressJacobianKernel: Finished interpRealGradient\n");
-        // #endif
-
-        // Compute weak residual integrand (derivative of energy w.r.t state gradient scaled by quadrature weight and
-        // detJ)
-        // A2D::Mat<double, numStates, numDim> weakRes;
-        // planeStressWeakRes<strainType>(dudx, E, nu, t, quadPtWeight * detJ, weakRes);
-
-        // TODO: How do we handle the residual evaluation, could either have only first thread in each element add to
-        // localRes, or have all threads add to it, scaled down by numDOF, or we could just not compute the local
-        // residual altogether?
-        // FIXME: For now I am just not computing the residual
-
-        // Add to residual (transform sensitivity to be w.r.t nodal states and scale by quadrature weight and detJ)
-        // addTransformStateGradSens<order, numStates, numDim, true>(quadPtXi, weakRes, JInv, localRes);
-
         // We will compute the element Jac one column at a time, essentially doing a forward AD pass through the
-        // residual calculation
-
-        // NOTE: This is where the loop over nodes would start in the serial code
+        // residual calculation:
         // Technically we should set a forward seed of 1 in q(nodeInd, stateInd) and 0 in all other entries, then
         // propogate that seed through the state gradient interpolation, but because we are only seeding a single
         // nodal state, we only need to use the basis function gradient for that node to propogate through the state
@@ -905,21 +899,32 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
         const int nodeInd = columnInd / numStates;
         const int nodeXInd = nodeInd % (order + 1);
         const int nodeYInd = nodeInd / (order + 1);
+        const int stateInd = columnInd % numStates;
         double N;
+
+        // Compute Jacobian, J = dx/dxi
+        A2D::Mat<double, numDim, numDim> J, JInv;
+        interpParamGradient<order, numDim, numDim>(quadPtXi, localNodeCoords[localElementInd], J);
+
+        // --- Compute J^-1 and detJ ---
+        A2D::MatInv(J, JInv);
+        double detJ;
+        A2D::MatDet(J, detJ);
 
         // Forward seed of dudxi is just dNdxi for this node
         A2D::Mat<double, 1, numDim> dudxiDot, dudxDot;
         lagrangePoly2dDeriv<double, order>(quadPtXi, nodeXInd, nodeYInd, N, dudxiDot.get_data());
 
-        // #ifndef NDEBUG
-        //         printf("assemblePlaneStressJacobianKernel: Finished computing dudxi forward seed\n");
-        // #endif
+        // Compute Jacobian, J = dx/dxi
+        A2D::Mat<double, numDim, numDim> J, JInv;
+        interpParamGradient<order, numDim, numDim>(quadPtXi, localNodeCoords[localElementInd], J);
+
+        // --- Compute state gradient in physical space ---
+        A2D::Mat<double, numStates, numDim> dudx;
+        interpRealGradient<order, numDim, numDim>(quadPtXi, localNodeStates[localElementInd], JInv, dudx);
 
         // Now propogate through dudx = dudxi * J^-1
         A2D::MatMatMult(dudxiDot, JInv, dudxDot);
-
-        // NOTE: This is where we would have a loop over the different states for each node in the serial code
-        const int stateInd = columnInd % numStates;
 
         // Create a matrix of AD scalars that will store dudx and it's forward seed
         A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> dudxFwd;
@@ -931,33 +936,33 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
 
         // Now we will do a forward AD pass through the weak residual calculation by
         // setting dudxDot as the seed in the state gradient
-        // for (int ii = 0; ii < numStates; ii++) {
-        //   for (int jj = 0; jj < numDim; jj++) {
-        //     dudxFwd(ii, jj).deriv[0] = 0.0;
-        //   }
-        // }
         for (int jj = 0; jj < numDim; jj++) {
           dudxFwd(stateInd, jj).deriv[0] = dudxDot[jj];
         }
 
-        // #ifndef NDEBUG
-        //         printf("assemblePlaneStressJacobianKernel: Finished computing dudx forward seed\n");
-        // #endif
-
         A2D::Mat<A2D::ADScalar<double, 1>, numStates, numDim> weakResFwd;
         planeStressWeakRes<strainType>(dudxFwd, E, nu, t, quadPtWeight * detJ, weakResFwd);
 
-        // Put the forward seed of the weak residual into it's own matrix
-        A2D::Mat<double, numStates, numDim> weakResDot;
+        // We now have the weak residual value, and it's forward seed in weakResFwd, we need to extract the value and
+        // the forward seed into separate arrays into to compute the residual and jacobian entries
+        A2D::Mat<double, numStates, numDim> weakRes, weakResDot;
         for (int ii = 0; ii < numStates; ii++) {
           for (int jj = 0; jj < numDim; jj++) {
+            weakRes(ii, jj) = weakResFwd(ii, jj).value;
             weakResDot(ii, jj) = weakResFwd(ii, jj).deriv[0];
           }
         }
 
-        // #ifndef NDEBUG
-        //         printf("assemblePlaneStressJacobianKernel: Finished computing weakRes forward seed\n");
-        // #endif
+        // On the thread computing the ith column of the jacobian, we will contribute only to the ith entry of the
+        // residual by mapping the weak residual (the sensitivity of the strain energy w.r.t the state gradient) to the
+        // sensitivity of the strain energy w.r.t that single DOF
+        addTransformStateGradSens<order, numStates, numDim>(quadPtXi,
+                                                            weakRes,
+                                                            JInv,
+                                                            nodeXInd,
+                                                            nodeYInd,
+                                                            stateInd,
+                                                            localRes[localElementInd][columnInd]);
 
         // Now propogate through the transformation of the state gradient sensitivity, this gives us this quad point's
         // contribution to this column of the element jacobian
@@ -1005,9 +1010,16 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
                                                        matEntries);
 
   // --- Scatter local residual back to global array---
-  // if (residual != nullptr) {
-  //   scatterResidual(connPtr, conn, elementInd, localRes, residual);
-  // }
+  if (residual != nullptr) {
+    scatterElementNodalValues<elemPerBlock, numNodes, numStates>(connPtr,
+                                                                 conn,
+                                                                 localThreadInd,
+                                                                 blockSize,
+                                                                 blockStartElement,
+                                                                 numElementsToCompute,
+                                                                 localRes,
+                                                                 residual);
+  }
 }
 // #endif
 
