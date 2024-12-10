@@ -894,8 +894,8 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
         // residual calculation:
         // Technically we should set a forward seed of 1 in q(nodeInd, stateInd) and 0 in all other entries, then
         // propogate that seed through the state gradient interpolation, but because we are only seeding a single
-        // nodal state, we only need to use the basis function gradient for that node to propogate through the state
-        // gradient calculation
+        // nodal state, the first few steps of this propogation can be greatly simplified, we only need to use the basis
+        // function gradient for that node to propogate through the state gradient calculation.
         const int nodeInd = columnInd / numStates;
         const int nodeXInd = nodeInd % (order + 1);
         const int nodeYInd = nodeInd / (order + 1);
@@ -906,24 +906,20 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
         A2D::Mat<double, numDim, numDim> J, JInv;
         interpParamGradient<order, numDim, numDim>(quadPtXi, localNodeCoords[localElementInd], J);
 
+        // Forward seed of dudxi is just dNdxi for this node
+        A2D::Mat<double, 1, numDim> dudxiDot, dudxDot;
+        lagrangePoly2dDeriv<double, order>(quadPtXi, nodeXInd, nodeYInd, N, dudxiDot.get_data());
+
         // --- Compute J^-1 and detJ ---
         A2D::MatInv(J, JInv);
         double detJ;
         A2D::MatDet(J, detJ);
 
-        // Forward seed of dudxi is just dNdxi for this node
-        A2D::Mat<double, 1, numDim> dudxiDot, dudxDot;
-        lagrangePoly2dDeriv<double, order>(quadPtXi, nodeXInd, nodeYInd, N, dudxiDot.get_data());
-
-        // Compute Jacobian, J = dx/dxi
-        A2D::Mat<double, numDim, numDim> J, JInv;
-        interpParamGradient<order, numDim, numDim>(quadPtXi, localNodeCoords[localElementInd], J);
-
         // --- Compute state gradient in physical space ---
         A2D::Mat<double, numStates, numDim> dudx;
         interpRealGradient<order, numDim, numDim>(quadPtXi, localNodeStates[localElementInd], JInv, dudx);
 
-        // Now propogate through dudx = dudxi * J^-1
+        // Now propogate the forward seed through dudx = dudxi * J^-1
         A2D::MatMatMult(dudxiDot, JInv, dudxDot);
 
         // Create a matrix of AD scalars that will store dudx and it's forward seed
@@ -944,7 +940,7 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
         planeStressWeakRes<strainType>(dudxFwd, E, nu, t, quadPtWeight * detJ, weakResFwd);
 
         // We now have the weak residual value, and it's forward seed in weakResFwd, we need to extract the value and
-        // the forward seed into separate arrays into to compute the residual and jacobian entries
+        // the forward seed into separate arrays to compute the residual and jacobian entries
         A2D::Mat<double, numStates, numDim> weakRes, weakResDot;
         for (int ii = 0; ii < numStates; ii++) {
           for (int jj = 0; jj < numDim; jj++) {
@@ -955,7 +951,8 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
 
         // On the thread computing the ith column of the jacobian, we will contribute only to the ith entry of the
         // residual by mapping the weak residual (the sensitivity of the strain energy w.r.t the state gradient) to the
-        // sensitivity of the strain energy w.r.t that single DOF
+        // sensitivity of the strain energy w.r.t that single DOF. Doing things this way means all threads do the same
+        // amount of work, and no atomic adds are required.
         addTransformStateGradSens<order, numStates, numDim>(quadPtXi,
                                                             weakRes,
                                                             JInv,
@@ -970,25 +967,11 @@ __global__ void assemblePlaneStressJacobianKernel(const int *const connPtr,
         memset(matColContribution, 0, numDOF * sizeof(double));
         addTransformStateGradSens<order, numStates, numDim>(quadPtXi, weakResDot, JInv, matColContribution);
 
-        // #ifndef NDEBUG
-        //         printf("assemblePlaneStressJacobianKernel: Finished addTransformStateGradSens\n");
-        // #endif
-
         // Add this column contribution to the element jacobian, consecutive threads should be adding to consecutive
         // entries in the row of the local matrix, which should give good performance?
         for (int ii = 0; ii < numDOF; ii++) {
           localMat[localElementInd][ii * numDOF + columnInd] += matColContribution[ii];
         }
-        // #ifndef NDEBUG
-        // printf("assemblePlaneStressJacobianKernel: Finished adding matColContribution to localMat\n");
-        // printf("Thread %d: Quad pt [%d, %d] added %f to row 0, column %d, value is now %f\n",
-        //        localThreadInd,
-        //        quadPtXInd,
-        //        quadPtYInd,
-        //        matColContribution[0],
-        //        columnInd,
-        //        localMat[localElementInd][columnInd]);
-        // #endif
       }
     }
 
