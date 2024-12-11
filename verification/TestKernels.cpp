@@ -186,9 +186,12 @@ int main(int argc, char *argv[]) {
     TacsScalar *disp;
     dispVec->getArray(&disp);
 
-    // Create an array for the kernel computed residual then call it
+    // Create an array for the kernel computed residual and matrix entries
     double *const kernelRes = new double[numNodes * 2];
     memset(kernelRes, 0, numNodes * 2 * sizeof(double));
+
+    int matDataLength = jacData->bsize * jacData->bsize * jacData->rowp[jacData->nrows];
+    double *const matEntries = new double[matDataLength];
 
 // If running on the GPU, allocate memory for the GPU data and transfer it over
 #ifdef __CUDACC__
@@ -212,13 +215,11 @@ int main(int argc, char *argv[]) {
     cudaMalloc(&d_kernelRes, numNodes * 2 * sizeof(double));
 
     double *d_matEntries;
-    int matDataLength = jacData->bsize * jacData->bsize * jacData->rowp[jacData->nrows];
     cudaMalloc(&d_matEntries, matDataLength * sizeof(double));
 
     int *d_elementBCSRMap;
     cudaMalloc(&d_elementBCSRMap, elementBCSRMapSize * sizeof(int));
     cudaMemcpy(d_elementBCSRMap, elementBCSRMap, elementBCSRMapSize * sizeof(int), cudaMemcpyHostToDevice);
-
 #endif
 
     // ==============================================================================
@@ -254,7 +255,7 @@ int main(int argc, char *argv[]) {
       memset(kernelRes, 0, numNodes * 2 * sizeof(double));
       resTime = runResidualKernel(elementOrder, connPtr, conn, numElements, disp, xPts2d, E, nu, t, kernelRes);
 
-      mat->zeroEntries();
+      memset(matEntries, 0, matDataLength * sizeof(double));
       jacTime = runJacobianKernel(elementOrder,
                                   connPtr,
                                   conn,
@@ -289,14 +290,14 @@ int main(int argc, char *argv[]) {
     // Copy the residual back to the CPU
     cudaMemcpy(kernelRes, d_kernelRes, numNodes * 2 * sizeof(double), cudaMemcpyDeviceToHost);
     // Copy the mat entries into the TACS matrix
-    cudaMemcpy(jacData->A, d_matEntries, matDataLength * sizeof(double), cudaMemcpyDeviceToHost);
+    cudaMemcpy(matEntries, d_matEntries, matDataLength * sizeof(double), cudaMemcpyDeviceToHost);
 #endif
 
     // --- Write out the first 1000 entries of the residual ---
     writeArrayToFile<TacsScalar>(kernelRes, std::min(resSize, RES_WRITE_SIZE_LIMIT), "KernelResidual.csv");
 
     // --- Write out the first 1000 rows and columns of the Jacobian ---
-    writeBCSRMatToFile(jacData, "KernelJacobian.mtx", JAC_WRITE_SIZE_LIMIT / 2, JAC_WRITE_SIZE_LIMIT / 2);
+    writeBCSRMatToFile(matEntries, "KernelJacobian.mtx", JAC_WRITE_SIZE_LIMIT / 2, JAC_WRITE_SIZE_LIMIT / 2);
 
     // Compute the error in the residual
     int maxAbsErrInd, maxRelErrorInd;
@@ -308,6 +309,19 @@ int main(int argc, char *argv[]) {
     }
     else {
       printf("Residuals do not match\n");
+    }
+    printf("Max Err: %10.4e in component %d.\n", maxAbsError, maxAbsErrInd);
+    printf("Max REr: %10.4e in component %d.\n", maxRelError, maxRelErrorInd);
+
+    // Compute the error in the jacobian
+    double maxAbsError = TacsGetMaxError(matEntries, jacData->A, matDataLength, &maxAbsErrInd);
+    double maxRelError = TacsGetMaxRelError(matEntries, jacData->A, matDataLength, &maxRelErrorInd);
+    bool jacMatch = TacsAssertAllClose(matEntries, jacData->A, matDataLength, 1e-6, 1e-6);
+    if (jacMatch) {
+      printf("\n\nJacobians match\n");
+    }
+    else {
+      printf("Jacobians do not match\n");
     }
     printf("Max Err: %10.4e in component %d.\n", maxAbsError, maxAbsErrInd);
     printf("Max REr: %10.4e in component %d.\n", maxRelError, maxRelErrorInd);
