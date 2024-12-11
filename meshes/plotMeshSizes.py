@@ -6,16 +6,15 @@ import matplotlib.pyplot as plt
 import niceplots
 
 
-from GmshUtils import fixGmshBDF
-
 plt.style.use(niceplots.get_style())
 
 plotMarkers = {"Annulus": "o", "Square": "s", "LBracket": "^"}
 plotColors = niceplots.get_colors_list()
 
-meshFiles = glob.glob("/nobackup/achris10/GPU-FEM-Project/meshes/*.bdf")
+# meshFiles = glob.glob("/nobackup/achris10/GPU-FEM-Project/meshes/*.bdf")
+meshFiles = glob.glob("/home/ali/BigBoi/ali/GPU-FEM-Project/meshes/*.bdf")
 
-fig, ax = plt.subplots(figsize=(10,8))
+fig, ax = plt.subplots(figsize=(10, 8))
 ax.set_xscale("log")
 ax.set_xlabel("Number of Elements")
 ax.set_yscale("log")
@@ -27,14 +26,15 @@ for meshFile in meshFiles:
     elementOrder = int(nameParts[1][-1])
     numElements = int(nameParts[2].replace("Elements", ""))
     numDOF = int(nameParts[3].replace("DOF", ""))
-    ax.plot(
-        numElements,
-        numDOF,
-        marker=plotMarkers[geomType],
-        color=plotColors[elementOrder - 1],
-        markersize=10,
-        clip_on=False,
-    )
+    if numDOF > 500:
+        ax.plot(
+            numElements,
+            numDOF,
+            marker=plotMarkers[geomType],
+            color=plotColors[elementOrder - 1],
+            markersize=10,
+            clip_on=False,
+        )
 
 # For each marker type I want to have a legend entry with an uncolored version of that marker
 geomHandles = []
@@ -47,7 +47,7 @@ for geomType in plotMarkers.keys():
 orderHandles = []
 orderLabels = []
 for i in range(1, 5):
-    orderHandles.append(Line2D([0], [0], marker="s", color=plotColors[i-1], linestyle="", markersize=10))
+    orderHandles.append(Line2D([0], [0], marker="s", color=plotColors[i - 1], linestyle="", markersize=10))
     orderLabels.append(f"{i}")
 
 niceplots.adjust_spines(ax)
@@ -55,7 +55,7 @@ geomLegend = ax.legend(geomHandles, geomLabels, title="Mesh Geometry:", loc="upp
 ax.add_artist(geomLegend)
 ax.legend(orderHandles, orderLabels, title="Element Order:", loc="lower right", labelcolor="linecolor")
 
-ax.set_xlim(1,1e7)
-ax.set_ylim(1,1e7)
+ax.set_xlim(10, 1e7)
+ax.set_ylim(1e3, 1e7)
 
 niceplots.save_figs(fig, "MeshSizes", formats=["pdf", "png"])

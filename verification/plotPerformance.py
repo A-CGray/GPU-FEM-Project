@@ -73,6 +73,9 @@ if __name__ == "__main__":
                     markersize=10,
                     clip_on=False,
                 )
+        efAx.set_ylim(bottom=0)
+        efAx.set_xlim(1e3, 1e7)
+        timeAx.set_xlim(1e3, 1e7)
 
         # For each marker type I want to have a legend entry with an uncolored version of that marker
         geomHandles = []

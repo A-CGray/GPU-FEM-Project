@@ -18,14 +18,19 @@ def readSparseCOOMat(fileName: str) -> sp.spmatrix:
 
 
 if __name__ == "__main__":
+    import os
     import matplotlib.pyplot as plt
     import niceplots
+
+    baseDir = "/home/ali/BigBoi/GPU-FEM-Project/MoreParallel"
+    TACSMatFile = os.path.join(baseDir, "Annulus-Order1-610Elements-1648DOF-TACSJacobian.mtx")
+    kernelMatFile = os.path.join(baseDir, "Annulus-Order1-610Elements-1648DOF-KernelJacobian.mtx")
 
     plt.style.use(niceplots.get_style())
 
     niceColors = niceplots.get_colors()
-    TACSMat = readSparseCOOMat("TACSJacobian.mtx")
-    KernelMat = readSparseCOOMat("KernelJacobian.mtx")
+    TACSMat = readSparseCOOMat(TACSMatFile)
+    KernelMat = readSparseCOOMat(kernelMatFile)
     markerSize = max(200 / TACSMat.shape[0], 0.1)
     plt.spy(TACSMat, c=niceColors["Yellow"], marker="s", markeredgecolor=niceColors["Yellow"], markersize=markerSize)
     plt.spy(KernelMat, c=niceColors["Blue"], marker="o", markeredgecolor=niceColors["Blue"], markersize=markerSize)
