@@ -196,7 +196,7 @@ __DEVICE__ void addTransformStateGradSens(const double xi[numDim],
   }
 }
 
-// Ass above but only computes the sensitivity w.r.t a single nodal state
+// As above but only computes the sensitivity w.r.t a single nodal state
 template <int order, int numVals, int numDim, bool atomic = false>
 __DEVICE__ void addTransformStateGradSens(const double xi[numDim],
                                           const A2D::Mat<double, numVals, numDim> stateGradSens,
