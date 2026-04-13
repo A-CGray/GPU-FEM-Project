@@ -12,7 +12,7 @@ mpi4py==3.1.6
 numba==0.60.0
 numpy==1.26.4
 packaging==24.1
-pillow==12.1.1
+pillow==12.2.0
 pyNastran==1.4.1
 pyparsing==3.2.0
 python-dateutil==2.9.0.post0
